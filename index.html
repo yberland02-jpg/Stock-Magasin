@@ -6,6 +6,7 @@
 <title>Stock magasin</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
 <style>
 :root{--bg:#f3f5f8;--card:#fff;--ink:#14213d;--mut:#64708a;--line:#d9dfe9;--main:#12305c;--warn:#b42318;--ok:#1d6b43}
@@ -60,12 +61,12 @@ td,th{padding:6px;border-bottom:1px solid var(--line);text-align:left}
 <div id="toast"></div>
 <script>
 // ===== Configuration =====
-const DB = "https://stock-consommables-default-rtdb.europe-west1.firebasedatabase.app"; // URL de la base Firebase (à vérifier)
+const DB = "https://stock-consommables-default-rtdb.firebaseio.com"; // URL de la base Firebase (à vérifier)
 const ROOT = "magasin";   // dossier séparé de l'atelier dans la base
 const PIN = "1234";       // code administrateur (à changer)
-const VERSION = "v1.3";
+const VERSION = "v1.6";
 // =========================
-let S = {items:{}, moves:{}}, admin = false, tab = 'stock', q = '', stream = null;
+let S = {items:{}, moves:{}, ops:{}}, admin = false, tab = 'stock', q = '', stream = null;
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const api = (p, m = 'GET', b) => fetch(`${DB}/${ROOT}/${p}.json`, {method:m, body:b === undefined ? undefined : JSON.stringify(b)}).then(r => { if(!r.ok) throw 0; return r.json(); });
@@ -74,7 +75,7 @@ const ini = () => localStorage.getItem('ini') || '';
 $('ver').textContent = VERSION;
 
 async function load(){
-  try{ const d = await api(''); S.items = d?.items || {}; S.moves = d?.moves || {}; $('net').textContent = ''; render(); }
+  try{ const d = await api(''); S.items = d?.items || {}; S.moves = d?.moves || {}; S.ops = d?.ops || {}; $('net').textContent = ''; render(); }
   catch(e){ $('net').textContent = '· hors ligne'; }
 }
 setInterval(() => { if($('modal').style.display !== 'flex') load(); }, 6000);
@@ -97,13 +98,17 @@ function vStock(){
   const f = L.filter(i => (!window.fc || i.cat === window.fc) && (i.name + ' ' + (i.cat || '') + ' ' + (i.ref || '')).toLowerCase().includes(q.toLowerCase()));
   return `<div class="kpi"><div><b>${L.length}</b><span>références</span></div><div><b class="${low ? 'low' : ''}">${low}</b><span>sous le seuil</span></div><div><b>${out}</b><span>sorties ce mois</span></div></div>
   <div class="bar"><input placeholder="Rechercher" value="${esc(q)}" oninput="q=this.value;render();this.focus()"><select style="width:45%" onchange="window.fc=this.value;render()"><option value="">Toutes</option>${cats.map(c => `<option ${window.fc === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>
-  ${admin ? `<div class="bar"><button class="sm" onclick="editItem()">Nouvel article</button><button class="sm sec" onclick="order()">Commander</button><button class="sm sec" onclick="exportX()">Export Excel</button><button class="sm sec" onclick="importX()">Importer</button><button class="sm sec" onclick="loadCat()">Catalogue</button></div>` : ''}
+  ${admin ? `<div class="bar"><button class="sm" onclick="editItem()">Nouvel article</button><button class="sm sec" onclick="order()">Commander</button><button class="sm sec" onclick="exportX()">Export Excel</button><button class="sm sec" onclick="importX()">Importer</button><button class="sm sec" onclick="loadCat()">Catalogue</button><button class="sm sec" onclick="cards()">Cartes</button></div>` : ''}
   ${f.map(i => `<div class="item"><div class="row"><div><div class="name">${esc(i.name)}</div><div class="cat">${esc(i.ref || '')}${i.cat ? ' · ' + esc(i.cat) : ''}${i.min ? ' · seuil ' + i.min : ''}</div></div><div class="qty ${(i.min > 0 && i.qty <= i.min) ? 'low' : ''}">${i.qty} ${esc(i.unit || '')}</div></div>
-  <div class="acts"><button class="sm" onclick="sortie('${i.id}')">Sortie</button>${admin ? `<button class="sm sec" onclick="entree('${i.id}')">Entrée</button><button class="sm sec" onclick="qr('${i.id}')">QR</button><button class="sm sec" onclick="editItem('${i.id}')">Modifier</button><button class="sm red" onclick="del('${i.id}')">Supprimer</button>` : ''}</div></div>`).join('') || '<div class="box">Aucun article.</div>'}`;
+  <div class="acts"><button class="sm" onclick="needOp(() => sortie('${i.id}'))">Sortie</button>${admin ? `<button class="sm sec" onclick="entree('${i.id}')">Entrée</button><button class="sm sec" onclick="qr('${i.id}')">QR</button><button class="sm sec" onclick="editItem('${i.id}')">Modifier</button><button class="sm red" onclick="del('${i.id}')">Supprimer</button>` : ''}</div></div>`).join('') || '<div class="box">Aucun article.</div>'}`;
 }
 
 function vSortie(){
-  return `<div class="box"><b>Sortie par scan QR</b><p class="cat">Scannez l'étiquette de l'article puis indiquez la quantité et vos initiales.</p><video id="cam" playsinline muted style="display:none"></video><div class="acts"><button onclick="startCam()">Scanner</button></div></div>`;
+  const o = opActive();
+  return `<div class="box"><b>Sortie de matière</b>${o
+    ? `<p>Opérateur : <b>${esc(o.name)}</b> (${esc(o.ini)}) <button class="sm sec" onclick="SESSION = null; render()">Changer</button></p><p class="cat">${DOUCH ? 'Scannez l’article avec la douchette.' : 'Scannez l’étiquette de l’article.'}</p>${DOUCH ? '' : '<div class="acts"><button onclick="scanItem()">Scanner un article</button></div>'}`
+    : `<p class="cat">${DOUCH ? 'Scannez votre carte avec la douchette, puis l’article.' : '1. Scannez votre carte. 2. Scannez l’article. 3. Indiquez la quantité.'}</p>${DOUCH ? '' : '<div class="acts"><button onclick="needOp(scanItem)">Scanner ma carte</button></div>'}`}
+  <div class="acts" style="margin-top:12px"><button class="sm sec" onclick="setDouch(${DOUCH ? 0 : 1})">Lecteur : ${DOUCH ? 'douchette' : 'caméra'} (changer)</button></div></div>`;
 }
 
 function vHisto(){
@@ -115,14 +120,15 @@ function vHisto(){
 }
 
 function openM(h){ $('mc').innerHTML = h; $('modal').style.display = 'flex'; }
-function closeM(){ $('modal').style.display = 'none'; }
+function closeM(){ $('modal').style.display = 'none'; stopCam(); SCAN_CB = null; if(document.activeElement && document.activeElement.blur) document.activeElement.blur(); }
 
 function sortie(id){
   const i = S.items[id]; if(!i) return toast('Article inconnu');
   openM(`<b>Sortie : ${esc(i.name)}</b><p class="cat">En stock : ${i.qty} ${esc(i.unit || '')}</p>
   <label>Quantité</label><input id="mq" type="number" min="1" value="1" inputmode="numeric">
-  <label>Initiales (obligatoire)</label><input id="mi" maxlength="4" value="${esc(ini())}" style="text-transform:uppercase">
+  <p class="cat">Opérateur : <b>${esc(SESSION ? SESSION.name : '')}</b> (${esc(SESSION ? SESSION.ini : '')})</p>
   <div class="acts"><button onclick="doMove('${id}','sortie')">Valider la sortie</button><button class="sec" onclick="closeM()">Annuler</button></div>`);
+  const qf = $('mq'); qf.focus(); qf.select(); qf.onkeydown = e => { if(e.key === 'Enter') doMove(id, 'sortie'); };
 }
 function entree(id){
   const i = S.items[id];
@@ -131,7 +137,9 @@ function entree(id){
   <div class="acts"><button onclick="doMove('${id}','entree')">Valider l'entrée</button><button class="sec" onclick="closeM()">Annuler</button></div>`);
 }
 async function doMove(id, type){
-  const n = parseInt($('mq').value), who = $('mi').value.trim().toUpperCase();
+  const o = type === 'sortie' ? opActive() : null;
+  if(type === 'sortie' && !o){ closeM(); return toast('Session expirée : scannez votre carte'); }
+  const n = parseInt($('mq').value), who = type === 'sortie' ? o.ini : $('mi').value.trim().toUpperCase();
   if(!n || n < 1) return toast('Quantité invalide');
   if(!who) return toast('Initiales obligatoires');
   try{
@@ -139,8 +147,8 @@ async function doMove(id, type){
     if(type === 'sortie' && n > cur.qty) return toast('Stock insuffisant');
     const qty = cur.qty + (type === 'sortie' ? -n : n);
     await api(`items/${id}/qty`, 'PUT', qty);
-    await api('moves', 'POST', {item:id, ref:cur.ref || '', name:cur.name, qty:n, who, type, ts:Date.now()});
-    localStorage.setItem('ini', who); closeM(); toast('Enregistré'); load();
+    await api('moves', 'POST', {item:id, ref:cur.ref || '', name:cur.name, qty:n, who, op:o ? o.name : '', type, ts:Date.now()});
+    localStorage.setItem('ini', who); if(o) SESSION.t = Date.now(); closeM(); toast('Enregistré'); load();
   }catch(e){ toast('Erreur réseau'); }
 }
 
@@ -173,24 +181,128 @@ function adminToggle(){
   const p = prompt('Code administrateur'); if(p === PIN){ admin = true; render(); } else if(p !== null) toast('Code incorrect');
 }
 
-// ===== Scan =====
-async function startCam(){
+// ===== Carte opérateur et scan =====
+let SESSION = null, lastBad = 0, pendingKey = '', SCAN_CB = null, DOUCH = localStorage.getItem('douch') !== '0';
+const SESSION_MS = 180000;
+const key = c => String(c).trim().replace(/[.$#\[\]\/]/g, '_');
+const opActive = () => SESSION && Date.now() - SESSION.t < SESSION_MS ? SESSION : null;
+const bad = m => { if(Date.now() - lastBad > 2000){ lastBad = Date.now(); toast(m); } return false; };
+const UNAZ = {'&':'1', 'é':'2', '"':'3', "'":'4', '(':'5', '-':'6', 'è':'7', '_':'8', 'ç':'9', 'à':'0'};
+const findItem = raw => {
+  const c = String(raw).trim(); if(S.items[c]) return c;
+  const l = c.toLowerCase(); if(S.items[l]) return l;
+  const u = l.replace(/[&é"'(\-è_çà]/g, ch => UNAZ[ch]); return S.items[u] ? u : null;
+};
+function scanPrompt(title, hint, cb, cancel, extra){
+  const wrap = c => { const r = cb(c); if(r !== false && SCAN_CB === wrap) SCAN_CB = null; return r; };
+  SCAN_CB = wrap;
+  openM(`<b>${title}</b>${DOUCH ? '<p class="cat" style="margin:16px 0">Scannez avec la douchette.</p>' : '<video id="cam" playsinline muted style="margin-top:10px"></video>'}${hint ? `<p class="cat">${hint}</p>` : ''}${extra || ''}<div class="acts"><button class="sec" onclick="${cancel || 'closeM()'}">Annuler</button></div>`);
+  if(!DOUCH) scanTo(wrap);
+}
+function setDouch(v){ DOUCH = !!v; localStorage.setItem('douch', v ? '1' : '0'); render(); }
+
+async function scanTo(cb){
   const v = $('cam');
   try{
-    stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
-    v.srcObject = stream; v.style.display = 'block'; await v.play();
+    stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment', width:{ideal:1280}, height:{ideal:720}}});
+    v.srcObject = stream; await v.play();
+    const bd = window.BarcodeDetector ? new BarcodeDetector() : null;
+    let zx = null;
+    if(!bd && window.ZXing){
+      const Z = window.ZXing, H = new Map();
+      H.set(Z.DecodeHintType.POSSIBLE_FORMATS, [Z.BarcodeFormat.CODE_128, Z.BarcodeFormat.CODE_39, Z.BarcodeFormat.EAN_13, Z.BarcodeFormat.EAN_8, Z.BarcodeFormat.ITF, Z.BarcodeFormat.CODABAR]);
+      H.set(Z.DecodeHintType.TRY_HARDER, true);
+      zx = new Z.MultiFormatReader(); zx.setHints(H);
+    }
+    if(!bd && !zx) toast('Lecteur de code-barres indisponible : QR code seulement');
     const c = document.createElement('canvas'), x = c.getContext('2d', {willReadFrequently:true});
-    const tick = () => {
+    const tick = async () => {
       if(!stream) return;
-      if(v.videoWidth){ c.width = v.videoWidth; c.height = v.videoHeight; x.drawImage(v, 0, 0);
-        const r = jsQR(x.getImageData(0, 0, c.width, c.height).data, c.width, c.height);
-        if(r && S.items[r.data]){ stopCam(); sortie(r.data); return; } }
-      requestAnimationFrame(tick);
+      if(v.videoWidth){
+        let code = null;
+        if(bd){ try{ const r = await bd.detect(v); if(r[0]) code = r[0].rawValue; }catch(e){} }
+        if(!code){
+          c.width = v.videoWidth; c.height = v.videoHeight; x.drawImage(v, 0, 0);
+          if(zx){ try{ code = zx.decode(new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(new ZXing.HTMLCanvasElementLuminanceSource(c)))).getText(); }catch(e){} }
+          if(!code){ const r = jsQR(x.getImageData(0, 0, c.width, c.height).data, c.width, c.height); if(r) code = r.data; }
+        }
+        if(code && cb(code) !== false) return;
+      }
+      if(zx) setTimeout(tick, 120); else requestAnimationFrame(tick);
     };
     tick();
-  }catch(e){ toast('Caméra indisponible'); }
+  }catch(e){ closeM(); toast('Caméra indisponible'); }
 }
 function stopCam(){ if(stream){ stream.getTracks().forEach(t => t.stop()); stream = null; } }
+
+function needOp(next){
+  if(opActive()) return next();
+  scanPrompt('Scannez votre carte', DOUCH ? '' : 'Présentez le code-barres de la carte à plat, bien éclairé.', code => {
+    const o = S.ops[key(code)];
+    if(!o) return bad('Carte inconnue : voir un administrateur');
+    stopCam(); closeM(); SESSION = {name:o.name, ini:o.ini, t:Date.now()}; toast('Bonjour ' + o.name); next();
+    return true;
+  });
+}
+function scanItem(){
+  scanPrompt('Scannez l’article', '', code => {
+    const id = findItem(code);
+    if(!id) return bad('Article inconnu');
+    stopCam(); closeM(); sortie(id);
+    return true;
+  });
+}
+
+function cards(){
+  const O = Object.values(S.ops);
+  openM(`<b>Cartes enregistrées</b><table>${O.map((o, n) => `<tr><td>${esc(o.name)}</td><td>${esc(o.ini)}</td><td><button class="sm red" onclick="delCard(${n})">Retirer</button></td></tr>`).join('') || '<tr><td>Aucune carte</td></tr>'}</table>
+  <div class="acts"><button onclick="addCard()">Ajouter une carte</button><button class="sec" onclick="closeM()">Fermer</button></div>`);
+}
+function addCard(){
+  scanPrompt('Scannez la carte à enregistrer', 'Code-barres à plat, bien éclairé. Sinon, saisissez le numéro :', cardCode, 'cancelScan(); cards()',
+    `<div class="row" style="margin-top:8px"><input id="mn" placeholder="Numéro de la carte"><button onclick="cardCode($('mn').value)">OK</button></div>`);
+}
+function cancelScan(){ stopCam(); SCAN_CB = null; }
+function cardCode(code){
+  code = String(code || '').trim(); if(!code) return false;
+  const k = key(code); stopCam();
+  if(S.ops[k]){ toast('Carte déjà enregistrée'); cards(); return true; }
+  pendingKey = k;
+  openM(`<b>Nouvelle carte</b><label>Nom et prénom</label><input id="on"><label>Initiales</label><input id="oi" maxlength="4" style="text-transform:uppercase">
+  <div class="acts"><button onclick="saveCard()">Enregistrer</button><button class="sec" onclick="cards()">Annuler</button></div>`);
+  return true;
+}
+async function saveCard(){
+  const name = $('on').value.trim(), ini = $('oi').value.trim().toUpperCase();
+  if(!name || !ini) return toast('Nom et initiales requis');
+  try{ await api('ops/' + pendingKey, 'PUT', {name, ini}); await load(); cards(); }catch(e){ toast('Erreur réseau'); }
+}
+async function delCard(n){
+  const k = Object.keys(S.ops)[n]; if(!k || !confirm('Retirer cette carte ?')) return;
+  try{ await api('ops/' + k, 'DELETE'); await load(); cards(); }catch(e){ toast('Erreur réseau'); }
+}
+
+// ===== Douchette (lecteur USB ou Bluetooth en mode clavier) =====
+let buf = '', lastT = 0, idleT = null;
+document.addEventListener('keydown', e => {
+  const a = document.activeElement;
+  if(a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && !(a.closest('#modal') && $('modal').style.display !== 'flex')) return;
+  if(e.key === 'Enter' || e.key === 'Tab'){ if(buf.length >= 3){ e.preventDefault(); flushScan(); } else buf = ''; return; }
+  if(e.key.length !== 1 || e.ctrlKey || e.altKey || e.metaKey) return;
+  if(a && a.tagName === 'BUTTON') a.blur();
+  const t = Date.now(); if(t - lastT > 100) buf = '';
+  buf += e.key; lastT = t;
+  clearTimeout(idleT); idleT = setTimeout(() => { if(buf.length >= 4) flushScan(); else buf = ''; }, 200);
+});
+function flushScan(){
+  clearTimeout(idleT); const code = buf.trim(); buf = ''; if(!code) return;
+  if(SCAN_CB) return void SCAN_CB(code);
+  if($('modal').style.display === 'flex') return;
+  const id = findItem(code), o = S.ops[key(code)];
+  if(id) return needOp(() => sortie(id));
+  if(o){ SESSION = {name:o.name, ini:o.ini, t:Date.now()}; toast('Bonjour ' + o.name); return go('sortie'); }
+  bad('Code inconnu');
+}
 
 // ===== Excel =====
 function exportX(){
@@ -200,7 +312,7 @@ function exportX(){
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['Stock magasin'], ['Export du', new Date().toLocaleDateString('fr-FR')], ['Références', L.length], ['Sous le seuil', L.filter(i => (i.min > 0 && i.qty <= i.min)).length], ['Sorties du mois (tous opérateurs)', mo]]), 'Résumé');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(L.map(i => ({Référence:i.ref, Désignation:i.name, Catégorie:i.cat, Quantité:i.qty, Conditionnement:i.unit, Seuil:i.min}))), 'Stock');
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(M.map(m => ({Date:fdate(m.ts), Type:m.type, Référence:m.ref || '', Article:m.name, Quantité:m.qty, Initiales:m.who}))), 'Sorties');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(M.map(m => ({Date:fdate(m.ts), Type:m.type, Référence:m.ref || '', Article:m.name, Quantité:m.qty, Initiales:m.who, Nom:m.op || ''}))), 'Sorties');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(Object.entries(by).map(([k, v]) => { const [w, m] = k.split('|'); return {Initiales:w, Mois:m, 'Total sorti':v}; })), 'Opérateurs');
   XLSX.writeFile(wb, 'stock-magasin-export.xlsx');
 }
