@@ -43,6 +43,12 @@ video{width:100%;border-radius:10px;background:#000}
 table{width:100%;border-collapse:collapse;font-size:13px}
 td,th{padding:6px;border-bottom:1px solid var(--line);text-align:left}
 #toast{position:fixed;top:12px;left:50%;transform:translateX(-50%);background:var(--main);color:#fff;padding:10px 16px;border-radius:8px;display:none;z-index:20}
+#lab{position:fixed;inset:0;background:#fff;overflow:auto;z-index:30;padding:8px}
+#lab .g{display:grid;grid-template-columns:repeat(4,1fr);gap:4mm}
+#lab .c{border:1px solid #999;padding:3mm;text-align:center;font-size:9px;break-inside:avoid}
+#lab .c svg{width:26mm;height:26mm}
+#lab .c b,#lab .c span{display:block}
+@media print{body>*:not(#lab){display:none!important}#lab{position:static;overflow:visible}.noprint{display:none!important}}
 </style>
 </head>
 <body>
@@ -60,10 +66,10 @@ td,th{padding:6px;border-bottom:1px solid var(--line);text-align:left}
 <div id="toast"></div>
 <script>
 // ===== Configuration =====
-const DB = "https://stock-consommables-default-rtdb.europe-west1.firebasedatabase.app"; // URL de la base Firebase (à vérifier)
+const DB = "https://stock-consommables-default-rtdb.firebaseio.com"; // URL de la base Firebase (à vérifier)
 const ROOT = "magasin";   // dossier séparé de l'atelier dans la base
 const PIN = "1234";       // code administrateur (à changer)
-const VERSION = "v1.1";
+const VERSION = "v1.2";
 // =========================
 let S = {items:{}, moves:{}}, admin = false, tab = 'stock', q = '', stream = null;
 const $ = id => document.getElementById(id);
@@ -225,10 +231,11 @@ async function loadCat(){
   try{ await api('items', 'PATCH', add); toast('Catalogue chargé'); load(); }catch(e){ toast('Erreur réseau'); }
 }
 function labels(){
-  const w = window.open('', '_blank'); if(!w) return toast('Fenêtre bloquée');
-  const cells = list().map(i => { const q = qrcode(0, 'M'); q.addData(i.id); q.make(); return `<div class="c">${q.createSvgTag(3)}<b>${esc(i.ref || '')}</b><span>${esc(i.name)}</span></div>`; }).join('');
-  w.document.write(`<html><head><meta charset="utf-8"><title>Étiquettes QR</title><style>body{font-family:sans-serif;margin:8mm}.g{display:grid;grid-template-columns:repeat(4,1fr);gap:4mm}.c{border:1px solid #999;padding:3mm;text-align:center;font-size:9px;break-inside:avoid}.c svg{width:26mm;height:26mm}.c b,.c span{display:block}</style></head><body><div class="g">${cells}</div></body></html>`);
-  w.document.close();
+  if(typeof qrcode === 'undefined') return toast('Bibliothèque QR non chargée');
+  const L = list(); if(!L.length) return toast('Aucun article');
+  const cells = L.map(i => { const q = qrcode(0, 'M'); q.addData(i.id); q.make(); return `<div class="c">${q.createSvgTag(3)}<b>${esc(i.ref || '')}</b><span>${esc(i.name)}</span></div>`; }).join('');
+  let d = $('lab'); if(!d){ d = document.createElement('div'); d.id = 'lab'; document.body.appendChild(d); }
+  d.innerHTML = `<div class="noprint bar"><button onclick="window.print()">Imprimer</button><button class="sec" onclick="$('lab').remove()">Fermer</button></div><div class="g">${cells}</div>`;
 }
 load(); render();
 </script>
