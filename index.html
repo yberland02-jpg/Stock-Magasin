@@ -7,6 +7,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
 <style>
 :root{--bg:#f3f5f8;--card:#fff;--ink:#14213d;--mut:#64708a;--line:#d9dfe9;--main:#12305c;--warn:#b42318;--ok:#1d6b43}
@@ -64,7 +65,7 @@ td,th{padding:6px;border-bottom:1px solid var(--line);text-align:left}
 const DB = "https://stock-consommables-default-rtdb.europe-west1.firebasedatabase.app"; // URL de la base Firebase (à vérifier)
 const ROOT = "magasin";   // dossier séparé de l'atelier dans la base
 const PIN = "1234";       // code administrateur (à changer)
-const VERSION = "v2.0";
+const VERSION = "v2.1";
 // =========================
 let S = {items:{}, moves:{}, ops:{}}, admin = false, tab = 'stock', q = '', stream = null;
 const $ = id => document.getElementById(id);
@@ -98,7 +99,7 @@ function vStock(){
   const f = L.filter(i => (!window.fc || i.cat === window.fc) && (i.name + ' ' + (i.cat || '') + ' ' + (i.ref || '')).toLowerCase().includes(q.toLowerCase()));
   return `<div class="kpi"><div><b>${L.length}</b><span>références</span></div><div><b class="${low ? 'low' : ''}">${low}</b><span>sous le seuil</span></div><div><b>${out}</b><span>sorties ce mois</span></div></div>
   <div class="bar"><input placeholder="Rechercher" value="${esc(q)}" oninput="q=this.value;render();this.focus()"><select style="width:45%" onchange="window.fc=this.value;render()"><option value="">Toutes</option>${cats.map(c => `<option ${window.fc === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>
-  ${admin ? `<div class="bar"><button class="sm" onclick="editItem()">Nouvel article</button><button class="sm sec" onclick="order()">Commander</button><button class="sm sec" onclick="exportX()">Export Excel</button><button class="sm sec" onclick="exportKPI()">Export KPI</button><button class="sm sec" onclick="importX()">Importer</button><button class="sm sec" onclick="loadCat()">Catalogue</button><button class="sm sec" onclick="cards()">Cartes</button></div>` : ''}
+  ${admin ? `<div class="bar"><button class="sm" onclick="editItem()">Nouvel article</button><button class="sm sec" onclick="order()">Commander</button><button class="sm sec" onclick="exportX()">Export Excel</button><button class="sm sec" onclick="importX()">Importer</button><button class="sm sec" onclick="loadCat()">Catalogue</button><button class="sm sec" onclick="cards()">Cartes</button></div>` : ''}
   ${f.map(i => `<div class="item"><div class="row"><div><div class="name">${esc(i.name)}</div><div class="cat">${esc(i.ref || '')}${i.cat ? ' · ' + esc(i.cat) : ''}${i.min ? ' · seuil ' + i.min : ''}</div></div><div class="qty ${(i.min > 0 && i.qty <= i.min) ? 'low' : ''}">${i.qty} ${esc(i.unit || '')}</div></div>
   <div class="acts"><button class="sm" onclick="needOp(() => sortie('${i.id}'))">Sortie</button>${admin ? `<button class="sm sec" onclick="entree('${i.id}')">Entrée</button><button class="sm sec" onclick="qr('${i.id}')">QR</button><button class="sm sec" onclick="editItem('${i.id}')">Modifier</button><button class="sm red" onclick="del('${i.id}')">Supprimer</button>` : ''}</div></div>`).join('') || '<div class="box">Aucun article.</div>'}`;
 }
@@ -180,7 +181,7 @@ function order(){
     : '<p>Rien à commander : aucun article n’est sous son seuil.</p>'}
   <div class="acts">${L.length ? '<button onclick="exportOrder()">Exporter en Excel</button>' : ''}<button class="sec" onclick="closeM()">Fermer</button></div>`);
 }
-function exportOrder(){
+function exportOrderBasic(){
   const rows = ORD.filter(o => o.q > 0).map(o => ({Référence:o.ref, Désignation:o.name, Catégorie:o.cat, Conditionnement:o.unit, 'Stock actuel':o.qty, Seuil:o.min, 'Quantité à commander':o.q}));
   if(!rows.length) return toast('Aucune quantité à commander');
   const ws = XLSX.utils.json_to_sheet(rows), wb = XLSX.utils.book_new();
@@ -334,7 +335,7 @@ function flushScan(){
 }
 
 // ===== Excel =====
-function exportX(){
+function exportXBasic(){
   const L = list(), M = moves(), mk = monthKey(Date.now());
   const by = {}; M.filter(m => m.type === 'sortie').forEach(m => { const k = m.who + '|' + monthKey(m.ts); by[k] = (by[k] || 0) + m.qty; });
   const mo = M.filter(m => m.type === 'sortie' && monthKey(m.ts) === mk).reduce((s, m) => s + m.qty, 0);
@@ -345,61 +346,65 @@ function exportX(){
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(Object.entries(by).map(([k, v]) => { const [w, m] = k.split('|'); return {Initiales:w, Mois:m, 'Total sorti':v}; })), 'Opérateurs');
   XLSX.writeFile(wb, 'stock-magasin-export.xlsx');
 }
-function exportKPI(){
-  const L = list(), D = 86400000, T = Date.now(), now = new Date(T);
-  const M = moves().filter(m => m.type === 'sortie');
-  const mk = monthKey(T), pm = monthKey(new Date(now.getFullYear(), now.getMonth() - 1, 1).getTime());
-  const u = a => a.reduce((s, m) => s + m.qty, 0), pct = v => ({t:'n', v, z:'0.0%'});
-  const cur = M.filter(m => monthKey(m.ts) === mk), prev = M.filter(m => monthKey(m.ts) === pm);
-  const bar = (v, max) => max > 0 && v > 0 ? '█'.repeat(Math.max(1, Math.round(v / max * 20))) : '';
-  const last = {}, s30 = {}, s90 = {};
-  M.forEach(m => { if(!(last[m.item] >= m.ts)) last[m.item] = m.ts; if(T - m.ts <= 30 * D) s30[m.item] = (s30[m.item] || 0) + m.qty; if(T - m.ts <= 90 * D) s90[m.item] = (s90[m.item] || 0) + m.qty; });
-  const rupt = L.filter(i => i.qty <= 0).length, low = L.filter(i => i.min > 0 && i.qty <= i.min && i.qty > 0).length;
-  const dorm = L.filter(i => i.qty > 0 && !(last[i.id] && T - last[i.id] <= 90 * D)).length;
-  const uc = u(cur), up = u(prev);
-  const byItem = {}; cur.forEach(m => { const o = byItem[m.item] = byItem[m.item] || {ref:m.ref || '', name:m.name, u:0, n:0}; o.u += m.qty; o.n++; });
-  const topA = Object.values(byItem).sort((a, b) => b.u - a.u).slice(0, 10);
-  const grp = f => { const g = {}; cur.forEach(m => { const k = f(m) || '(non renseigné)'; const o = g[k] = g[k] || {u:0, n:0}; o.u += m.qty; o.n++; }); return Object.entries(g).sort((a, b) => b[1].u - a[1].u); };
-  const byOp = grp(m => m.op || m.who), byCat = grp(m => (S.items[m.item] || {}).cat);
-  const A = [['STOCK MAGASIN - INDICATEURS'], ['Export du', now.toLocaleDateString('fr-FR')], ['Mois analysé', mk], [],
-    ['INDICATEURS CLÉS', 'Valeur'],
-    ['Références au catalogue', L.length],
-    ['Unités en stock', L.reduce((s, i) => s + (i.qty > 0 ? i.qty : 0), 0)],
-    ['Références en rupture (stock à 0)', rupt],
-    ['Taux de rupture', L.length ? pct(rupt / L.length) : 'n/a'],
-    ['Références sous le seuil (hors rupture)', low],
-    ['Références sans sortie depuis 90 jours (en stock)', dorm],
-    ['Sorties du mois (unités)', uc],
-    ['Sorties du mois (prélèvements)', cur.length],
-    ['Sorties du mois précédent (unités)', up],
-    ['Évolution par rapport au mois précédent', up ? pct((uc - up) / up) : 'n/a'],
-    ['Moyenne de sorties par jour (unités)', Math.round(uc / now.getDate() * 10) / 10],
-    ['Opérateurs actifs ce mois', new Set(cur.map(m => m.who)).size], [],
-    ['TOP 10 ARTICLES SORTIS (MOIS)', 'Référence', 'Unités', 'Prélèvements', 'Part du mois', 'Graphique']];
-  topA.forEach((o, n) => A.push([(n + 1) + '. ' + o.name, o.ref, o.u, o.n, uc ? pct(o.u / uc) : 0, bar(o.u, topA[0].u)]));
-  if(!topA.length) A.push(['Aucune sortie ce mois']);
-  A.push([], ['SORTIES PAR OPÉRATEUR (MOIS)', '', 'Unités', 'Prélèvements', 'Part du mois', 'Graphique']);
-  byOp.forEach(([k, o]) => A.push([k, '', o.u, o.n, pct(o.u / uc), bar(o.u, byOp[0][1].u)]));
-  A.push([], ['SORTIES PAR CATÉGORIE (MOIS)', '', 'Unités', 'Prélèvements', 'Part du mois', 'Graphique']);
-  byCat.forEach(([k, o]) => A.push([k, '', o.u, o.n, pct(o.u / uc), bar(o.u, byCat[0][1].u)]));
-  const ws1 = XLSX.utils.aoa_to_sheet(A); ws1['!cols'] = [{wch:52}, {wch:22}, {wch:10}, {wch:14}, {wch:13}, {wch:24}];
-
-  const months = [];
-  for(let k = 11; k >= 0; k--){ const key = monthKey(new Date(now.getFullYear(), now.getMonth() - k, 1).getTime()), a = M.filter(m => monthKey(m.ts) === key); months.push([key, u(a), a.length, new Set(a.map(m => m.who)).size]); }
-  const mx = Math.max(...months.map(r => r[1]));
-  const ws2 = XLSX.utils.aoa_to_sheet([['Mois', 'Sorties (unités)', 'Prélèvements', 'Opérateurs actifs', 'Graphique'], ...months.map(r => [...r, bar(r[1], mx)])]);
-  ws2['!cols'] = [{wch:10}, {wch:16}, {wch:14}, {wch:17}, {wch:24}];
-
-  const rank = i => i.qty <= 0 ? 0 : (i.min > 0 && i.qty <= i.min ? 1 : 2);
-  const cov = i => s30[i.id] ? Math.round(i.qty / (s30[i.id] / 30)) : null;
-  const rows = L.slice().sort((a, b) => rank(a) - rank(b) || (cov(a) ?? 1e9) - (cov(b) ?? 1e9) || a.name.localeCompare(b.name))
-    .map(i => ({Référence:i.ref || '', Désignation:i.name, Catégorie:i.cat || '', Stock:i.qty, Seuil:i.min || 0, Statut:['Rupture', 'Sous le seuil', 'OK'][rank(i)],
-      'Sorties 30 j':s30[i.id] || 0, 'Sorties 90 j':s90[i.id] || 0, 'Dernière sortie':last[i.id] ? new Date(last[i.id]).toLocaleDateString('fr-FR') : '', 'Couverture (jours)':cov(i) ?? ''}));
-  const ws3 = XLSX.utils.json_to_sheet(rows); ws3['!cols'] = [{wch:22}, {wch:50}, {wch:22}, {wch:8}, {wch:8}, {wch:14}, {wch:13}, {wch:13}, {wch:15}, {wch:18}];
-
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws1, 'KPI'); XLSX.utils.book_append_sheet(wb, ws2, 'Mois'); XLSX.utils.book_append_sheet(wb, ws3, 'Articles');
-  XLSX.writeFile(wb, 'stock-magasin-kpi.xlsx');
+// ===== Exports Excel (mise en forme) =====
+const NAVY = 'FF12305C', ZEBRA = 'FFF3F5F8', LINE = 'FFD9DFE9', RED = 'FFB42318';
+const fill = argb => ({type:'pattern', pattern:'solid', fgColor:{argb}});
+function styled(wb, name, cols, rows){
+  const ws = wb.addWorksheet(name, {views:[{state:'frozen', ySplit:1, showGridLines:false}]});
+  ws.columns = cols.map(c => ({header:c.h, key:c.k, width:c.w, style:c.f ? {numFmt:c.f} : {}}));
+  rows.forEach(r => ws.addRow(r));
+  ws.getRow(1).height = 24;
+  ws.getRow(1).eachCell(c => { c.font = {bold:true, color:{argb:'FFFFFFFF'}, size:11}; c.fill = fill(NAVY); c.alignment = {vertical:'middle', horizontal:'left', indent:1}; });
+  ws.eachRow((row, n) => { if(n > 1){ row.height = 20; row.eachCell({includeEmpty:true}, c => { c.border = {bottom:{style:'thin', color:{argb:LINE}}}; c.alignment = {vertical:'middle', indent:1}; if(n % 2 === 0) c.fill = fill(ZEBRA); }); } });
+  ws.autoFilter = {from:{row:1, column:1}, to:{row:1, column:cols.length}};
+  return ws;
+}
+async function saveXlsx(wb, name){
+  const buf = await wb.xlsx.writeBuffer(), a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([buf], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));
+  a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+const localDate = ts => new Date(ts - new Date(ts).getTimezoneOffset() * 60000);
+async function exportX(){
+  if(!window.ExcelJS) return exportXBasic();
+  try{
+    const L = list(), M = moves(), mk = monthKey(Date.now());
+    const mo = M.filter(m => m.type === 'sortie' && monthKey(m.ts) === mk).reduce((s, m) => s + m.qty, 0);
+    const state = i => i.qty <= 0 ? 'Rupture' : (i.min > 0 && i.qty <= i.min ? 'Sous le seuil' : 'OK');
+    const wb = new ExcelJS.Workbook(); wb.creator = 'Stock magasin';
+    const rs = wb.addWorksheet('Résumé', {views:[{showGridLines:false}]});
+    rs.columns = [{width:46}, {width:18}];
+    rs.mergeCells('A1:B1'); rs.getCell('A1').value = 'Stock magasin'; rs.getCell('A1').font = {bold:true, size:20, color:{argb:NAVY}}; rs.getRow(1).height = 34;
+    rs.getCell('A2').value = 'Export du ' + new Date().toLocaleDateString('fr-FR'); rs.getCell('A2').font = {color:{argb:'FF64708A'}};
+    rs.addRow([]); rs.addRow(['Indicateur', 'Valeur']);
+    rs.getRow(4).eachCell(c => { c.font = {bold:true, color:{argb:'FFFFFFFF'}}; c.fill = fill(NAVY); c.alignment = {vertical:'middle', indent:1}; });
+    rs.getCell('B4').alignment = {horizontal:'right', vertical:'middle', indent:1};
+    [['Références au catalogue', L.length], ['Références sous le seuil', L.filter(i => i.min > 0 && i.qty <= i.min).length], ['Sorties du mois (tous opérateurs)', mo]].forEach((r, k) => {
+      const row = rs.addRow(r); row.height = 22;
+      row.eachCell(c => { c.border = {bottom:{style:'thin', color:{argb:LINE}}}; c.alignment = {vertical:'middle', indent:1}; if(k % 2 === 1) c.fill = fill(ZEBRA); });
+      row.getCell(2).font = {bold:true, color:{argb:NAVY}}; row.getCell(2).alignment = {horizontal:'right', vertical:'middle', indent:1};
+    });
+    const st = styled(wb, 'Stock', [{h:'Référence', k:'ref', w:24}, {h:'Désignation', k:'name', w:56}, {h:'Catégorie', k:'cat', w:24}, {h:'Quantité', k:'qty', w:12}, {h:'Conditionnement', k:'unit', w:18}, {h:'Seuil', k:'min', w:10}, {h:'Statut', k:'st', w:16}],
+      L.map(i => ({ref:i.ref || '', name:i.name, cat:i.cat || '', qty:i.qty, unit:i.unit || '', min:i.min || 0, st:state(i)})));
+    st.eachRow((row, n) => { if(n > 1 && row.getCell('st').value !== 'OK'){ ['qty', 'st'].forEach(k => row.getCell(k).font = {bold:true, color:{argb:RED}}); } });
+    styled(wb, 'Sorties', [{h:'Date', k:'d', w:19, f:'dd/mm/yyyy hh:mm'}, {h:'Type', k:'t', w:10}, {h:'Référence', k:'ref', w:24}, {h:'Article', k:'name', w:56}, {h:'Quantité', k:'q', w:11}, {h:'Initiales', k:'w', w:11}, {h:'Nom', k:'op', w:24}],
+      M.map(m => ({d:localDate(m.ts), t:m.type === 'sortie' ? 'Sortie' : 'Entrée', ref:m.ref || '', name:m.name, q:m.qty, w:m.who || '', op:m.op || ''})));
+    const by = {}; M.filter(m => m.type === 'sortie').forEach(m => { const k = (m.who || '?') + '|' + monthKey(m.ts), o = by[k] = by[k] || {w:m.who || '?', op:m.op || '', mo:monthKey(m.ts), tot:0}; o.tot += m.qty; if(m.op) o.op = m.op; });
+    styled(wb, 'Opérateurs', [{h:'Mois', k:'mo', w:12}, {h:'Initiales', k:'w', w:12}, {h:'Nom', k:'op', w:26}, {h:'Total sorti', k:'tot', w:14}],
+      Object.values(by).sort((a, b) => b.mo.localeCompare(a.mo) || b.tot - a.tot));
+    await saveXlsx(wb, 'stock-magasin-export.xlsx');
+  }catch(e){ console.error(e); toast('Erreur export'); }
+}
+async function exportOrder(){
+  if(!window.ExcelJS) return exportOrderBasic();
+  const rows = ORD.filter(o => o.q > 0);
+  if(!rows.length) return toast('Aucune quantité à commander');
+  try{
+    const wb = new ExcelJS.Workbook(); wb.creator = 'Stock magasin';
+    const ws = styled(wb, 'Commande', [{h:'Référence', k:'ref', w:24}, {h:'Désignation', k:'name', w:56}, {h:'Catégorie', k:'cat', w:24}, {h:'Conditionnement', k:'unit', w:18}, {h:'Stock actuel', k:'qty', w:13}, {h:'Seuil', k:'min', w:10}, {h:'Quantité à commander', k:'q', w:22}], rows);
+    ws.eachRow((row, n) => { if(n > 1) row.getCell('q').font = {bold:true, color:{argb:NAVY}}; });
+    await saveXlsx(wb, 'commande-magasin.xlsx');
+  }catch(e){ console.error(e); toast('Erreur export'); }
 }
 function importX(){
   const f = document.createElement('input'); f.type = 'file'; f.accept = '.xlsx,.xls,.csv';
