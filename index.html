@@ -43,12 +43,6 @@ video{width:100%;border-radius:10px;background:#000}
 table{width:100%;border-collapse:collapse;font-size:13px}
 td,th{padding:6px;border-bottom:1px solid var(--line);text-align:left}
 #toast{position:fixed;top:12px;left:50%;transform:translateX(-50%);background:var(--main);color:#fff;padding:10px 16px;border-radius:8px;display:none;z-index:20}
-#lab{position:fixed;inset:0;background:#fff;overflow:auto;z-index:30;padding:8px}
-#lab .g{display:grid;grid-template-columns:repeat(4,1fr);gap:4mm}
-#lab .c{border:1px solid #999;padding:3mm;text-align:center;font-size:9px;break-inside:avoid}
-#lab .c svg{width:26mm;height:26mm}
-#lab .c b,#lab .c span{display:block}
-@media print{body>*:not(#lab){display:none!important}#lab{position:static;overflow:visible}.noprint{display:none!important}}
 </style>
 </head>
 <body>
@@ -69,7 +63,7 @@ td,th{padding:6px;border-bottom:1px solid var(--line);text-align:left}
 const DB = "https://stock-consommables-default-rtdb.firebaseio.com"; // URL de la base Firebase (à vérifier)
 const ROOT = "magasin";   // dossier séparé de l'atelier dans la base
 const PIN = "1234";       // code administrateur (à changer)
-const VERSION = "v1.2";
+const VERSION = "v1.3";
 // =========================
 let S = {items:{}, moves:{}}, admin = false, tab = 'stock', q = '', stream = null;
 const $ = id => document.getElementById(id);
@@ -103,7 +97,7 @@ function vStock(){
   const f = L.filter(i => (!window.fc || i.cat === window.fc) && (i.name + ' ' + (i.cat || '') + ' ' + (i.ref || '')).toLowerCase().includes(q.toLowerCase()));
   return `<div class="kpi"><div><b>${L.length}</b><span>références</span></div><div><b class="${low ? 'low' : ''}">${low}</b><span>sous le seuil</span></div><div><b>${out}</b><span>sorties ce mois</span></div></div>
   <div class="bar"><input placeholder="Rechercher" value="${esc(q)}" oninput="q=this.value;render();this.focus()"><select style="width:45%" onchange="window.fc=this.value;render()"><option value="">Toutes</option>${cats.map(c => `<option ${window.fc === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>
-  ${admin ? `<div class="bar"><button class="sm" onclick="editItem()">Nouvel article</button><button class="sm sec" onclick="order()">Commander</button><button class="sm sec" onclick="exportX()">Export Excel</button><button class="sm sec" onclick="importX()">Importer</button><button class="sm sec" onclick="loadCat()">Catalogue</button><button class="sm sec" onclick="labels()">Étiquettes QR</button></div>` : ''}
+  ${admin ? `<div class="bar"><button class="sm" onclick="editItem()">Nouvel article</button><button class="sm sec" onclick="order()">Commander</button><button class="sm sec" onclick="exportX()">Export Excel</button><button class="sm sec" onclick="importX()">Importer</button><button class="sm sec" onclick="loadCat()">Catalogue</button></div>` : ''}
   ${f.map(i => `<div class="item"><div class="row"><div><div class="name">${esc(i.name)}</div><div class="cat">${esc(i.ref || '')}${i.cat ? ' · ' + esc(i.cat) : ''}${i.min ? ' · seuil ' + i.min : ''}</div></div><div class="qty ${(i.min > 0 && i.qty <= i.min) ? 'low' : ''}">${i.qty} ${esc(i.unit || '')}</div></div>
   <div class="acts"><button class="sm" onclick="sortie('${i.id}')">Sortie</button>${admin ? `<button class="sm sec" onclick="entree('${i.id}')">Entrée</button><button class="sm sec" onclick="qr('${i.id}')">QR</button><button class="sm sec" onclick="editItem('${i.id}')">Modifier</button><button class="sm red" onclick="del('${i.id}')">Supprimer</button>` : ''}</div></div>`).join('') || '<div class="box">Aucun article.</div>'}`;
 }
@@ -229,13 +223,6 @@ async function loadCat(){
   if(!n) return toast('Catalogue déjà chargé');
   if(!confirm(`Ajouter ${n} articles du catalogue (stock à 0) ?`)) return;
   try{ await api('items', 'PATCH', add); toast('Catalogue chargé'); load(); }catch(e){ toast('Erreur réseau'); }
-}
-function labels(){
-  if(typeof qrcode === 'undefined') return toast('Bibliothèque QR non chargée');
-  const L = list(); if(!L.length) return toast('Aucun article');
-  const cells = L.map(i => { const q = qrcode(0, 'M'); q.addData(i.id); q.make(); return `<div class="c">${q.createSvgTag(3)}<b>${esc(i.ref || '')}</b><span>${esc(i.name)}</span></div>`; }).join('');
-  let d = $('lab'); if(!d){ d = document.createElement('div'); d.id = 'lab'; document.body.appendChild(d); }
-  d.innerHTML = `<div class="noprint bar"><button onclick="window.print()">Imprimer</button><button class="sec" onclick="$('lab').remove()">Fermer</button></div><div class="g">${cells}</div>`;
 }
 load(); render();
 </script>
