@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stock magasin</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+<style>
+:root{--bg:#f3f5f8;--card:#fff;--ink:#14213d;--mut:#64708a;--line:#d9dfe9;--main:#12305c;--warn:#b42318;--ok:#1d6b43}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink);padding-bottom:70px}
+header{background:var(--main);color:#fff;padding:14px 16px}
+header h1{margin:0;font-size:19px;font-weight:600}
+header small{opacity:.7;font-size:12px}
+.bar{display:flex;gap:8px;padding:10px 12px}
+input,select,button{font:inherit;border-radius:8px;border:1px solid var(--line);padding:10px;background:#fff;color:var(--ink)}
+input,select{width:100%}
+button{cursor:pointer;background:var(--main);color:#fff;border:0;font-weight:600}
+button.sec{background:#fff;color:var(--main);border:1px solid var(--main)}
+button.red{background:var(--warn)}
+button.sm{padding:6px 10px;font-size:13px}
+.item{background:var(--card);margin:0 12px 8px;padding:12px;border-radius:10px;border:1px solid var(--line)}
+.row{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.name{font-weight:600}
+.cat{color:var(--mut);font-size:12px}
+.qty{font-weight:700;font-size:18px;white-space:nowrap}
+.low{color:var(--warn)}
+.acts{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:#fff;border-top:1px solid var(--line)}
+nav button{flex:1;background:none;color:var(--mut);border-radius:0;padding:14px 4px;font-size:14px}
+nav button.on{color:var(--main);border-top:3px solid var(--main)}
+.box{background:var(--card);margin:12px;padding:14px;border-radius:10px;border:1px solid var(--line)}
+.kpi{display:flex;gap:10px;margin:12px}
+.kpi div{flex:1;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px}
+.kpi b{display:block;font-size:22px;color:var(--main)}
+.kpi span{font-size:12px;color:var(--mut)}
+#modal{position:fixed;inset:0;background:rgba(10,20,40,.55);display:none;align-items:flex-end;justify-content:center;z-index:9}
+#modal .in{background:#fff;width:100%;max-width:520px;border-radius:14px 14px 0 0;padding:16px;max-height:90vh;overflow:auto}
+label{display:block;font-size:13px;color:var(--mut);margin:10px 0 4px}
+video{width:100%;border-radius:10px;background:#000}
+table{width:100%;border-collapse:collapse;font-size:13px}
+td,th{padding:6px;border-bottom:1px solid var(--line);text-align:left}
+#toast{position:fixed;top:12px;left:50%;transform:translateX(-50%);background:var(--main);color:#fff;padding:10px 16px;border-radius:8px;display:none;z-index:20}
+</style>
+</head>
+<body>
+<header>
+  <div class="row"><h1>Stock magasin</h1><button class="sm sec" id="lock" onclick="adminToggle()">Administrateur</button></div>
+  <small id="ver"></small> <small id="net"></small>
+</header>
+<div id="app"></div>
+<nav>
+  <button data-t="stock" onclick="go('stock')">Stock</button>
+  <button data-t="sortie" onclick="go('sortie')">Sortie</button>
+  <button data-t="histo" onclick="go('histo')">Historique</button>
+</nav>
+<div id="modal" onclick="if(event.target==this)closeM()"><div class="in" id="mc"></div></div>
+<div id="toast"></div>
+<script>
+// ===== Configuration =====
+const DB = "https://stock-consommables-default-rtdb.europe-west1.firebasedatabase.app"; // URL de la base Firebase (à vérifier)
+const ROOT = "magasin";   // dossier séparé de l'atelier dans la base
+const PIN = "1234";       // code administrateur (à changer)
+const VERSION = "v1.1";
+// =========================
+let S = {items:{}, moves:{}}, admin = false, tab = 'stock', q = '', stream = null;
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const api = (p, m = 'GET', b) => fetch(`${DB}/${ROOT}/${p}.json`, {method:m, body:b === undefined ? undefined : JSON.stringify(b)}).then(r => { if(!r.ok) throw 0; return r.json(); });
+const toast = t => { const e = $('toast'); e.textContent = t; e.style.display = 'block'; setTimeout(() => e.style.display = 'none', 2200); };
+const ini = () => localStorage.getItem('ini') || '';
+$('ver').textContent = VERSION;
+
+async function load(){
+  try{ const d = await api(''); S.items = d?.items || {}; S.moves = d?.moves || {}; $('net').textContent = ''; render(); }
+  catch(e){ $('net').textContent = '· hors ligne'; }
+}
+setInterval(() => { if($('modal').style.display !== 'flex') load(); }, 6000);
+
+function go(t){ tab = t; stopCam(); render(); }
+function render(){
+  document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.t === tab));
+  $('lock').textContent = admin ? 'Quitter admin' : 'Administrateur';
+  $('app').innerHTML = tab === 'stock' ? vStock() : tab === 'sortie' ? vSortie() : vHisto();
+}
+const list = () => Object.entries(S.items).map(([id, v]) => ({id, ...v})).sort((a, b) => (a.cat || '').localeCompare(b.cat || '') || a.name.localeCompare(b.name));
+const monthKey = ts => { const d = new Date(ts); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'); };
+const moves = () => Object.entries(S.moves).map(([id, v]) => ({id, ...v})).sort((a, b) => b.ts - a.ts);
+const fdate = ts => new Date(ts).toLocaleString('fr-FR', {day:'2-digit', month:'2-digit', year:'2-digit', hour:'2-digit', minute:'2-digit'});
+
+function vStock(){
+  const L = list(), low = L.filter(i => (i.min > 0 && i.qty <= i.min)).length;
+  const mk = monthKey(Date.now()), out = moves().filter(m => m.type === 'sortie' && monthKey(m.ts) === mk).reduce((s, m) => s + m.qty, 0);
+  const cats = [...new Set(L.map(i => i.cat).filter(Boolean))];
+  const f = L.filter(i => (!window.fc || i.cat === window.fc) && (i.name + ' ' + (i.cat || '') + ' ' + (i.ref || '')).toLowerCase().includes(q.toLowerCase()));
+  return `<div class="kpi"><div><b>${L.length}</b><span>références</span></div><div><b class="${low ? 'low' : ''}">${low}</b><span>sous le seuil</span></div><div><b>${out}</b><span>sorties ce mois</span></div></div>
+  <div class="bar"><input placeholder="Rechercher" value="${esc(q)}" oninput="q=this.value;render();this.focus()"><select style="width:45%" onchange="window.fc=this.value;render()"><option value="">Toutes</option>${cats.map(c => `<option ${window.fc === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>
+  ${admin ? `<div class="bar"><button class="sm" onclick="editItem()">Nouvel article</button><button class="sm sec" onclick="order()">Commander</button><button class="sm sec" onclick="exportX()">Export Excel</button><button class="sm sec" onclick="importX()">Importer</button><button class="sm sec" onclick="loadCat()">Catalogue</button><button class="sm sec" onclick="labels()">Étiquettes QR</button></div>` : ''}
+  ${f.map(i => `<div class="item"><div class="row"><div><div class="name">${esc(i.name)}</div><div class="cat">${esc(i.ref || '')}${i.cat ? ' · ' + esc(i.cat) : ''}${i.min ? ' · seuil ' + i.min : ''}</div></div><div class="qty ${(i.min > 0 && i.qty <= i.min) ? 'low' : ''}">${i.qty} ${esc(i.unit || '')}</div></div>
+  <div class="acts"><button class="sm" onclick="sortie('${i.id}')">Sortie</button>${admin ? `<button class="sm sec" onclick="entree('${i.id}')">Entrée</button><button class="sm sec" onclick="qr('${i.id}')">QR</button><button class="sm sec" onclick="editItem('${i.id}')">Modifier</button><button class="sm red" onclick="del('${i.id}')">Supprimer</button>` : ''}</div></div>`).join('') || '<div class="box">Aucun article.</div>'}`;
+}
+
+function vSortie(){
+  return `<div class="box"><b>Sortie par scan QR</b><p class="cat">Scannez l'étiquette de l'article puis indiquez la quantité et vos initiales.</p><video id="cam" playsinline muted style="display:none"></video><div class="acts"><button onclick="startCam()">Scanner</button></div></div>`;
+}
+
+function vHisto(){
+  const M = moves(), mk = monthKey(Date.now());
+  const by = {}; M.filter(m => m.type === 'sortie' && monthKey(m.ts) === mk).forEach(m => by[m.who] = (by[m.who] || 0) + m.qty);
+  const tot = Object.values(by).reduce((a, b) => a + b, 0);
+  return `<div class="box"><b>Sorties du mois : ${tot}</b><table>${Object.entries(by).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${v}</td></tr>`).join('') || '<tr><td>Aucune sortie</td></tr>'}</table></div>
+  <div class="box"><table><tr><th>Date</th><th>Article</th><th>Qté</th><th>Qui</th></tr>${M.slice(0, 150).map(m => `<tr><td>${fdate(m.ts)}</td><td>${esc(m.name)}</td><td>${m.type === 'sortie' ? '-' : '+'}${m.qty}</td><td>${esc(m.who || '')}</td></tr>`).join('')}</table></div>`;
+}
+
+function openM(h){ $('mc').innerHTML = h; $('modal').style.display = 'flex'; }
+function closeM(){ $('modal').style.display = 'none'; }
+
+function sortie(id){
+  const i = S.items[id]; if(!i) return toast('Article inconnu');
+  openM(`<b>Sortie : ${esc(i.name)}</b><p class="cat">En stock : ${i.qty} ${esc(i.unit || '')}</p>
+  <label>Quantité</label><input id="mq" type="number" min="1" value="1" inputmode="numeric">
+  <label>Initiales (obligatoire)</label><input id="mi" maxlength="4" value="${esc(ini())}" style="text-transform:uppercase">
+  <div class="acts"><button onclick="doMove('${id}','sortie')">Valider la sortie</button><button class="sec" onclick="closeM()">Annuler</button></div>`);
+}
+function entree(id){
+  const i = S.items[id];
+  openM(`<b>Entrée : ${esc(i.name)}</b><label>Quantité reçue</label><input id="mq" type="number" min="1" value="1" inputmode="numeric">
+  <label>Initiales</label><input id="mi" maxlength="4" value="${esc(ini())}" style="text-transform:uppercase">
+  <div class="acts"><button onclick="doMove('${id}','entree')">Valider l'entrée</button><button class="sec" onclick="closeM()">Annuler</button></div>`);
+}
+async function doMove(id, type){
+  const n = parseInt($('mq').value), who = $('mi').value.trim().toUpperCase();
+  if(!n || n < 1) return toast('Quantité invalide');
+  if(!who) return toast('Initiales obligatoires');
+  try{
+    const cur = await api(`items/${id}`); if(!cur) return toast('Article supprimé');
+    if(type === 'sortie' && n > cur.qty) return toast('Stock insuffisant');
+    const qty = cur.qty + (type === 'sortie' ? -n : n);
+    await api(`items/${id}/qty`, 'PUT', qty);
+    await api('moves', 'POST', {item:id, ref:cur.ref || '', name:cur.name, qty:n, who, type, ts:Date.now()});
+    localStorage.setItem('ini', who); closeM(); toast('Enregistré'); load();
+  }catch(e){ toast('Erreur réseau'); }
+}
+
+function editItem(id){
+  const i = id ? S.items[id] : {ref:'', name:'', cat:'', qty:0, min:0, unit:''};
+  openM(`<b>${id ? 'Modifier' : 'Nouvel'} article</b>
+  <label>Référence</label><input id="er" value="${esc(i.ref)}"><label>Désignation</label><input id="en" value="${esc(i.name)}"><label>Catégorie</label><input id="ec" value="${esc(i.cat)}">
+  <label>Quantité</label><input id="eq" type="number" value="${i.qty}"><label>Seuil d'alerte</label><input id="em" type="number" value="${i.min || 0}"><label>Conditionnement</label><input id="eu" value="${esc(i.unit)}">
+  <div class="acts"><button onclick="saveItem('${id || ''}')">Enregistrer</button><button class="sec" onclick="closeM()">Annuler</button></div>`);
+}
+async function saveItem(id){
+  const v = {ref:$('er').value.trim(), name:$('en').value.trim(), cat:$('ec').value.trim(), qty:parseInt($('eq').value) || 0, min:parseInt($('em').value) || 0, unit:$('eu').value.trim()};
+  if(!v.name) return toast('Désignation requise');
+  try{ if(id) await api(`items/${id}`, 'PUT', v); else await api('items', 'POST', v); closeM(); load(); }catch(e){ toast('Erreur réseau'); }
+}
+async function del(id){ if(!confirm('Supprimer cet article ?')) return; try{ await api(`items/${id}`, 'DELETE'); load(); }catch(e){ toast('Erreur réseau'); } }
+
+function qr(id){
+  const q = qrcode(0, 'M'); q.addData(id); q.make();
+  openM(`<b>${esc(S.items[id].name)}</b><div style="text-align:center;margin:12px">${q.createSvgTag(6)}</div><p class="cat" style="text-align:center">Imprimez cette étiquette et collez-la sur l'emplacement.</p><div class="acts"><button class="sec" onclick="closeM()">Fermer</button></div>`);
+}
+
+function order(){
+  const L = list().filter(i => (i.min > 0 && i.qty <= i.min));
+  openM(`<b>À commander</b><table>${L.map(i => `<tr><td>${esc(i.ref || '')}<br>${esc(i.name)}</td><td>${i.qty} / ${i.min}</td></tr>`).join('') || '<tr><td>Rien à commander</td></tr>'}</table><div class="acts"><button class="sec" onclick="closeM()">Fermer</button></div>`);
+}
+
+function adminToggle(){
+  if(admin){ admin = false; return render(); }
+  const p = prompt('Code administrateur'); if(p === PIN){ admin = true; render(); } else if(p !== null) toast('Code incorrect');
+}
+
+// ===== Scan =====
+async function startCam(){
+  const v = $('cam');
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+    v.srcObject = stream; v.style.display = 'block'; await v.play();
+    const c = document.createElement('canvas'), x = c.getContext('2d', {willReadFrequently:true});
+    const tick = () => {
+      if(!stream) return;
+      if(v.videoWidth){ c.width = v.videoWidth; c.height = v.videoHeight; x.drawImage(v, 0, 0);
+        const r = jsQR(x.getImageData(0, 0, c.width, c.height).data, c.width, c.height);
+        if(r && S.items[r.data]){ stopCam(); sortie(r.data); return; } }
+      requestAnimationFrame(tick);
+    };
+    tick();
+  }catch(e){ toast('Caméra indisponible'); }
+}
+function stopCam(){ if(stream){ stream.getTracks().forEach(t => t.stop()); stream = null; } }
+
+// ===== Excel =====
+function exportX(){
+  const L = list(), M = moves(), mk = monthKey(Date.now());
+  const by = {}; M.filter(m => m.type === 'sortie').forEach(m => { const k = m.who + '|' + monthKey(m.ts); by[k] = (by[k] || 0) + m.qty; });
+  const mo = M.filter(m => m.type === 'sortie' && monthKey(m.ts) === mk).reduce((s, m) => s + m.qty, 0);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['Stock magasin'], ['Export du', new Date().toLocaleDateString('fr-FR')], ['Références', L.length], ['Sous le seuil', L.filter(i => (i.min > 0 && i.qty <= i.min)).length], ['Sorties du mois (tous opérateurs)', mo]]), 'Résumé');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(L.map(i => ({Référence:i.ref, Désignation:i.name, Catégorie:i.cat, Quantité:i.qty, Conditionnement:i.unit, Seuil:i.min}))), 'Stock');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(M.map(m => ({Date:fdate(m.ts), Type:m.type, Référence:m.ref || '', Article:m.name, Quantité:m.qty, Initiales:m.who}))), 'Sorties');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(Object.entries(by).map(([k, v]) => { const [w, m] = k.split('|'); return {Initiales:w, Mois:m, 'Total sorti':v}; })), 'Opérateurs');
+  XLSX.writeFile(wb, 'stock-magasin-export.xlsx');
+}
+function importX(){
+  const f = document.createElement('input'); f.type = 'file'; f.accept = '.xlsx,.xls,.csv';
+  f.onchange = async () => {
+    const wb = XLSX.read(await f.files[0].arrayBuffer()), rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+    const g = (r, ...k) => { for(const n of k){ const key = Object.keys(r).find(x => x.toLowerCase().startsWith(n)); if(key) return r[key]; } return ''; };
+    const add = rows.map(r => ({ref:String(g(r, 'réf', 'ref')).trim(), name:String(g(r, 'désign', 'design', 'nom', 'article')).trim(), cat:String(g(r, 'cat')).trim(), qty:parseInt(g(r, 'quant', 'qt', 'stock')) || 0, min:parseInt(g(r, 'seuil', 'min')) || 0, unit:String(g(r, 'unit', 'condit')).trim()})).filter(r => r.name);
+    if(!add.length || !confirm(`Importer ${add.length} articles ?`)) return;
+    try{ for(const a of add) await api('items', 'POST', a); toast('Import terminé'); load(); }catch(e){ toast('Erreur réseau'); }
+  };
+  f.click();
+}
+const CAT = [["SQUADRON","Lunette SQUADRON","unité","EPI et vêtements"],["WUIPILECR2032","PILE CR2032 (Cdt Qté 1)","unité","EPI et vêtements"],["FU3MESO130","Embout de recharge EARPODS (sachet de 10)","unité","EPI et vêtements"],["FU3MPD1010","BOUCHON DE PROTECTION AUDITIVE 3M EN MOUSSE DE PU (sachet 500)","unité","EPI et vêtements"],["EUGANT2524","GANT SOUDEUR CROUTE CUIR MANCHETTE 15CM TU/10","paire","EPI et vêtements"],["BA2058698","Gant main droite ATLANTIC WELDER RHT T10","unité","EPI et vêtements"],["BA2058699","Gant main gauche ATLANTIC WELDER RHT T10","unité","EPI et vêtements"],["ANSSAFEKNIT","Manchette SAFEKNIT GUARD 59-416 (multiple de 12)","unité","EPI et vêtements"],["DETASOUB","Tablier croute APRON 70x90","unité","EPI et vêtements"],["WUIVEST403","Veste de soudeur cuir plaine fleur dos anti feu","unité","EPI et vêtements"],["OVONAIR","CHAUSSURE HAUTE ON AIR MARINE S3","unité","EPI et vêtements"],["OVCAVOK","CHAUSSURE CAVOK BASSE MARINE S3","unité","EPI et vêtements"],["PWCHAUSFW","CHAUSSURE HAUTE SOUDEUR S1P","unité","EPI et vêtements"],["ROSTER","CHAUSSURE ROSTER 35070","unité","EPI et vêtements"],["AUDAE-RACE","CHAUSSURE SECU BASSE E-RACE NOIR S3 CI SRC EMBOUT ALU","unité","EPI et vêtements"],["AUDAE-RUN","CHAUSSURE SECU HAUTE E-RUN NOIR S3 CI SRC EMBOUT ALU","unité","EPI et vêtements"],["AUDAE-FAST","CHAUSSURE SECU BASSE (LELULHERNE.P T45)","unité","EPI et vêtements"],["AUDAE-JUMP","CHAUSSURE SECU HAUTE JUMP NOIR TEXTILE HYDROFUGE S3 (VANTHA T38)","unité","EPI et vêtements"],["10550PC-100","GLACE INTERIEUR (C39) 105 x 50 TRANSPARENT - (LOT DE 10)","unité","EPI et vêtements"],["428040","GLACE INTERIEUR SPEED GLASS 42-80-40 X 6","unité","EPI et vêtements"],["S141152","DISTRIBUTEUR LS 400 101340","unité","EPI et vêtements"],["EUGANT6630","GANT NINJA ICE","unité","EPI et vêtements"],["WUICAG414","CAGOULE SIMPLE EN PROBAN ANTI FEU REF, CAG414","unité","EPI et vêtements"],["PWCAGOULESW33","CAGOULE TETE/COU EN CUIR DE VACHETTE REF, SW33","unité","EPI et vêtements"],["JLFLACETCUIR0413VR","LACET CUIR 115 CM 0413VR","paire","EPI et vêtements"],["OVLACET120CM","LACET NOIR ROND 120 CM","paire","EPI et vêtements"],["MXCASQU6130","CASQUE ANTI-BRUIT MULTIPOSITIONS SNR 35DB Réf 6130-01","unité","EPI et vêtements"],["DIDIFLEXVE","ENSEMBLE DE PLUIE DIFLEX VERT Jersey Polyamide Enduit PU XL","unité","EPI et vêtements"],["DEGANTFBF49","GANT CUIR PLEINE FLEUR FOURRE/2490 ISLAND 10 (LOT DE 10)","unité","EPI et vêtements"],["PBVPANTECO","PANTALON ECO 100% COTON BUGATTI","unité","EPI et vêtements"],["PBVVECOBU","VESTE ECO 100% COTON BUGATTI","unité","EPI et vêtements"],["PBVPANTTYPHON2CPG","PANT TYPHON 2 BICOLORE GRIS/NOIR + POCHE GENOU","unité","EPI et vêtements"],["MXMASQU2555-01","MASQUE CLASSIQUE FFP3 NRD BOITE DE 20","unité","EPI et vêtements"],["MASQUE3PLISNOIR","Boïte de 50 masques d'hygiène type chirrurgical 3 plis papier NOIR","unité","EPI et vêtements"],["MSA430356","DEMI-MASQUE ADVANTAGE 200 LS TAILLE M","unité","EPI et vêtements"],["MSA430372","FILTRE ADVANTAGE A2P3 LOT DE 2 FILTRES","unité","EPI et vêtements"],["167001","BANDEAU LOT DE 10 167001","unité","EPI et vêtements"],["lesirius","CHAUSSURE SECU SIRIUS TYPE VILLE BASSE A LACETS CUIR NOIR S3ci","unité","EPI et vêtements"],["BZ1001574","DEMI MASQUE A CLIP KRATON VALUAIR réf:10 015 74","unité","EPI et vêtements"],["EPICMASQUR004","MASQUES JETABLES AVEC SOUPAPE FFP3 NR BOITE DE 12","unité","EPI et vêtements"],["PIPRECONINC","LUNETTE RECON INCOLORE ANTI-RAYURE/ANTI-BUEE (LUCAS SANDY)","unité","EPI et vêtements"],["EIFCOMBBASICLEAN","COMB JETABLE BASICLEAN A CAPUCHE SMMS BLANC CONFORT - Taille M","unité","EPI et vêtements"],["OVSEMELSOFTDRY","SEMELLE ANATOMIQUE SOFT DRY AV.ABSORBEUR DE CHOC La Paire (36 à 48)","unité","EPI et vêtements"],["DEVESTEB","VESTE SOUDEUR CROUTE DE BOVIN NATUREL Long.75cm (XL/XXL/XXXL)","unité","EPI et vêtements"],["TOK013","Casquette KARIBAN BAHIA 100% COTON - ORANGE","unité","EPI et vêtements"],["TOK013","Casquette KARIBAN BAHIA 100% COTON - ROYAL BLUE","unité","EPI et vêtements"],["TOK013","Casquette KARIBAN BAHIA 100% COTON - LIGHT GREY","unité","EPI et vêtements"],["TOK013","Casquette KARIBAN BAHIA 100% COTON - RED","unité","EPI et vêtements"],["TOK013","Casquette KARIBAN BAHIA 100% COTON - KELLY GREEN","unité","EPI et vêtements"],["RN:2771-6071634","PROTECTION EXTERNE STANDARD (sachet de 10)","unité","EPI et vêtements"],["0069-0328999","DISQUE FIBRE 3M982C 178*22 ENC P36 CUBITRON par 25","unité","Abrasifs et nettoyage"],["0069-0328989","DISQUE FIBRE 3M CUBIT2 125x22 P36 CUBITRON par 25","unité","Abrasifs et nettoyage"],["0069-0336783","PLATEAU DISQUE FIBRE RIGIDE 127XM14 et 5/8","unité","Abrasifs et nettoyage"],["0069-0336784","PLATEAU RIGIDE BBE 178MM M14 & 5/8","unité","Abrasifs et nettoyage"],["0059-0488447","Disque à lamelle (125x22 R822 GR 80) par 10","unité","Abrasifs et nettoyage"],["0059-0026057","Disques à couper (230x2,5) par 25","unité","Abrasifs et nettoyage"],["C600-866827","Disques à meuler (230x6) par 10","unité","Abrasifs et nettoyage"],["0059-0026141","Disque à couper (125x1.6) par 25","unité","Abrasifs et nettoyage"],["0059-0026009","Disques à couper (125x2,5) par 25","unité","Abrasifs et nettoyage"],["0059-0538061","Disque à meuler (125x6.5) par 10","unité","Abrasifs et nettoyage"],["C600-7152935","DIFFUSEUR GAZ MB 501 par 5","unité","Soudage"],["2026-1400445","TUBES CONTACT M8 12/10 CUCRZR","unité","Soudage"],["2026-7153877","GAINE GUIDE FIL ACIER 20X45 5M ROUGE","unité","Soudage"],["C600-6137888","Gant SOUDEUR ANTI CHALEUR CROUTE T10","unité","EPI et vêtements"],["2771-6033265","Bandeaux éponge 167520","unité","EPI et vêtements"],["RN: 0059-0360313","DISQUE RAPID BLAZE 125X22 (STK) UE10","unité","Abrasifs et nettoyage"],["RN: 0059-0408312","DISQUE SG BLAZE R9101 178X22 RAPID STRIP (STK) UE10","unité","Abrasifs et nettoyage"],["RN : C600-5159162","Cadenas 30mm par 6","unité","Outillage"],["RN : 0139-5170576","Rapporteur d'angle 1885.00","unité","Mesure et traçage"],["RN : 0139-5277905","Pince étau à becs longs 501","unité","Outillage"],["RN : 0139-5004726","Fausse equerre 817,20-200mm","unité","Mesure et traçage"],["RN : 0139-5439250","Clé mâle longue - jeu de 9 - Tête sphérique","unité","Outillage"],["RN : 0139-5004560","Equerre chapeau 90 clas 2 100mm","unité","Mesure et traçage"],["RN : 0139-5004545","Equerre chapeau 90 clas 2 300mm","unité","Mesure et traçage"],["RN : 0139-5004547","Equerre chapeau 90 clas 2 500mm","unité","Mesure et traçage"],["RN : 0139-5004562","Equerre chapeau 90 clasII 150mm","unité","Mesure et traçage"],["RN : 0139-5004543","Equerre chapeau 90 clasII 200mm","unité","Mesure et traçage"],["RN : 0139-5004544","Equerre chapeau 90 clasII 250mm","unité","Mesure et traçage"],["RN : 0139-5346394","Pointe à tracer dela 1589,00A","unité","Mesure et traçage"],["RN : 1134-5026372","Brosse à manche fil acier 5 rangs (lot 12)","unité","Abrasifs et nettoyage"],["RN : 2457-5055029","Craie de briancon nature 10x10x100","unité","Mesure et traçage"],["RN : 0146-5043625","Masse couple TB 8kg 136-1 8000EH","unité","Outillage"],["RN : C600-6083809","Balayette coco 4 rangs","unité","Abrasifs et nettoyage"],["RN : C600-6083808","Balai paille riz 5 fils","unité","Abrasifs et nettoyage"],["RN : C600-5204702","Pince universelle gainée 160mm","unité","Outillage"],["RN : 0139-5333278","Marteau rivoir hickory 200H.40PB","unité","Outillage"],["RN : 0139-5007304","Pointeau précision diamètre 8mm","unité","Outillage"],["RN : 0139-5000305","Burin profil cst long 300mm","unité","Outillage"],["RN : 2757-0086214","Fraise lime 6,0 CYL SB-1M","unité","Coupe et perçage"],["RN : 2757-0086215","Fraise lime 8,0 CYL SB-2M","unité","Coupe et perçage"],["RN : 2757-0086216","Fraise lime 9,5 CYL SB-3M","unité","Coupe et perçage"],["RN : 2757-0086218","Fraise lime 16,0 CYL SB-6M","unité","Coupe et perçage"],["RN : G600-0519268","Fraise lime forme L D.12,7x30-6 - conique rond","unité","Coupe et perçage"],["RN : G600-0519187","Fraise lime forme C D.12,7x25-6 - bout rond","unité","Coupe et perçage"],["RN : 0060-0137771","Roue à lamelles /TK F 60x30/6 - A 60 44509066","unité","Abrasifs et nettoyage"],["RN : 0168-8179678","Ruban adh. Papier masquage larg. 72","unité","Mesure et traçage"],["RN : 0135-5021071","Serre-joint pompe APB S800KM","unité","Outillage"],["RN : 0135-5021056","Serre-joint pompe APB S500KM","unité","Outillage"],["RN : 0139-5000751","Clés àfourches 17x19 lg 210","unité","Outillage"],["RN : 0139-5000753","Clés à fourches 18x19 lg 220","unité","Outillage"],["RN : 0139-5002765","Douilles standards 1/2 de 19","unité","Outillage"],["RN : 2457-5055013","Intrama SL,100 crayon galva","unité","Mesure et traçage"],["RN : 0139-5002617","Cutter","unité","Outillage"],["RN : 0139-5005683","Lame de cutter","unité","Outillage"],["RN : 1264418","Burin de chanfreineuse","unité","Coupe et perçage"],["RN : 0139-5001335","Clés males courtes lg 70 diamètre 4","unité","Outillage"],["RN : 0139-5001327","Clés males courtes lg 65 diamètre 3","unité","Outillage"],["RN : 0139-5001337","Clés males courtes lg 80 diamètre 5","unité","Outillage"],["RN : 1134-5026297","Brosse métallique fers grosse meule (lot de 10)","unité","Abrasifs et nettoyage"],["RN : 0139-5021714","Jeu de clés tamper torx","unité","Outillage"],["RN : 0139-5007988","Tenaille","unité","Outillage"],["3645*10,6333913 *003","Porte mesure nylon 2625200 sacoche ouverte","unité","Mesure et traçage"],["RN : C600-5159172","Cadenas à chiffre modifiable","unité","Outillage"],["RN : 5511-5028055","Cordeau traceur lg 30 M 0-47-100","unité","Mesure et traçage"],["RN : 3929-11317741","Lecteur d'angle S11006 36cm","unité","Mesure et traçage"],["RN : 0139-5346501","Jeu de 10 Protwist (FE / PZ / PH)","unité","Outillage"],["RN : C600-5159848","Pinceau plat queue morue L60","unité","Outillage"],["RN : 0665-5038986","Pinceau Queue radiateur L.40 - EP 9 soie virole coude","unité","Outillage"],["RN : C600-8133531","Electrode rutile acier Dim 2.5 x 350 / Etui 197 EE","unité","Soudage"],["RN : C600-8133532","Electrode rutile acier Dim 3,2 x 350 / Etui 120 EE","unité","Soudage"],["RN : 2441209-012","Lame de scie D355 40D (B-08414)","unité","Coupe et perçage"],["RN : C600-5159144","Pinceau à rechampir ECO n° 6 D29","unité","Outillage"],["RN : 8654-6119808","Protection main aluminisé - Dos en cuir (lot de 10)","unité","EPI et vêtements"],["RN : R600-5308484","DISQUE AIMANTE 56x10,7 EN FERRITE","unité","Divers"],["RN : S14033-1/16F","TUBE CONTACT TIP 1,6","unité","Soudage"],["Z600-8218756","RUBAN MASQUAGE 50MM","unité","Mesure et traçage"],["Q600-6168232","Gant anticoupure T8 (manut parc) lot 12 paires","unité","EPI et vêtements"],["Q600-6168233","Gant anticoupure T9 (manut parc) lot 12 paires","unité","EPI et vêtements"],["844928","lunettes G-EVOLUTION WELD 5 GISS (oxycoupage)","unité","EPI et vêtements"],["C600-652583","TETE COUPE ACETYLENE 12/10 TYPE G1 (10 à 25mm)","unité","Soudage"],["9804-6001279","SOUS GANT PROTECTION THERMIQUE (lot de 12 paires)","unité","EPI et vêtements"],["RN:9804-6003871","MANCHETTE KEVLAR 356MM 70114","unité","EPI et vêtements"],["RN:7520*-6130662","MANCHETTES PROTECTION LONGUEUR DE 45CM UE10 (par10)","paire","EPI et vêtements"],["G911-23-36-1304558-001","BALAI MAGNETIQUE LARGEUR 620MM","unité","Abrasifs et nettoyage"],["2771-6078476","MASQUE 3M SPEEDGLASS 100V NOIR TEINTE 8-12 - R2F/ 751120","unité","EPI et vêtements"],["R600*5074210","COUPE BOULONS, 900 MM","unité","Outillage"],["RN:0139-5000466","cisaille chantourneuse 26cm (parc à fer)","unité","Outillage"],["RN:0139-5000294","BURIN SPECIAL -POIGNEE - 60MM","unité","Outillage"],["RN:C600-5204703","PINCE UNIVERSELLE GAINEE 180MM","unité","Outillage"],["RN:2771-6106265","HARNAIS COMPLET SPEEDGLASFP2 AVEC KIT MONTAGE ET ACCESSOIRE","unité","EPI et vêtements"],["RN:0034-5363522","PINCE MULTI-FONCTIONS 18 EN 1","unité","Outillage"],["RN:0491-6031648","ECRAN BIONIC INCOLORE PULSAFE (PARE VISAGE)","unité","EPI et vêtements"],["RN:0491-6031652","ECRAN DE RECHANGE PC ANTI-RAYURE P/BIONIC","unité","EPI et vêtements"],["RN:3768-6169155","GUETRES FERMETURE PAR","unité","EPI et vêtements"],["RN:H882-6183661","MASQUE FFP3 BLS SERIE 030 (BOITE DE 10)","unité","EPI et vêtements"],["RN:C600-0536572","FRAISE A CAROTTER D.33 - LG.55 - HSS - QUEUE WELDON D.19,05","unité","Coupe et perçage"],["RN: 0542-25-36-510660","PLAQUETTE KTFSS12000HPGM KCP15A","unité","Coupe et perçage"],["RN:C600*-6081491","PARE VISAGE RELEVABLE G-FACE ECRAN POLYCARBONATE INC","unité","EPI et vêtements"],["RN:C600*-6081493","VISIERE DE RECHANGE ECRAN POLYCARBONATE INC","unité","EPI et vêtements"],["RN:C600*-6118003","GENOUILLERE POUR PANTALON URBANWORK (LOT DE 2)","unité","EPI et vêtements"],["C600-7152933","BUSE CONIQUE D 16 MB36K (ARGENT)","unité","Soudage"],["C600-7152936","BUSE CONIQUE D16MB501 / 38KD (CUIVRE)","unité","Soudage"],["C600-7152935","DIFFUSEUR GAZ MB 501","unité","Soudage"],["2026-7014552","DIFFUSEUR GAZ MB36 KD","unité","Soudage"],["2026-7150885","SPRAY CERAMIQUE BINZEL","unité","Soudage"],["C600-5159142","BROSSE MAIN LAITON GISS 787578","unité","Abrasifs et nettoyage"],["0139-5346394","POINTE TRACER CARBURE 150MM","unité","Mesure et traçage"],["2457-5360594","MARQUEUR A PEINTURE LIQUIDE BLANC","unité","Mesure et traçage"],["4119-6109691","Manchette CUIR LG400","unité","EPI et vêtements"],["8654-6119808","Protection main aluminisée","unité","EPI et vêtements"],["C600-6077762","Gant STARLAST 03/27000-33T11 G-DRIVER","unité","EPI et vêtements"],["C600-6077761","Gant STARLAST 03/27000-33T10 G-DRIVER","unité","EPI et vêtements"],["C600-6077763","Gant STARLAST 03/27000-33T8 G-DRIVER","unité","EPI et vêtements"],["C600-6077764","Gant STARLAST 03/27000-33T9 G-DRIVER","unité","EPI et vêtements"],["6236-7084152","ELECTRODE 220842","unité","Soudage"],["C600-5159938","MARQUEUR BILLE BLANC 3MM","unité","Mesure et traçage"],["C600-5159939","MARQUEUR BILLE BLEU 3MM","unité","Mesure et traçage"],["C600-5159940","MARQUEUR BILLE JAUNE 3MM","unité","Mesure et traçage"],["C600-5159942","MARQUEUR BILLE ROUGE 3MM","unité","Mesure et traçage"],["C600-5159943","MARQUEUR BILLE VERT 3MM","unité","Mesure et traçage"],["5383-6078598","LUNETTES Masque cobra inc mousse confort","unité","EPI et vêtements"],["5383-6063385","LUNETTES Tracker nylon noir inc","unité","EPI et vêtements"],["118820 12","HOLEX FRAISE A CAROTTER Ø12 LONGUEUR 55MM","unité","Coupe et perçage"],["118820 14","HOLEX FRAISE A CAROTTER Ø14 LONGUEUR 55MM","unité","Coupe et perçage"],["118820 15","HOLEX FRAISE A CAROTTER Ø15 LONGUEUR 55MM","unité","Coupe et perçage"],["118820 16","HOLEX FRAISE A CAROTTER Ø16 LONGUEUR 55MM","unité","Coupe et perçage"],["118820 18","HOLEX FRAISE A CAROTTER Ø18 LONGUEUR 55MM","unité","Coupe et perçage"],["118820 22","HOLEX FRAISE A CAROTTER Ø22 LONGUEUR 55MM","unité","Coupe et perçage"],["118889 6X79","HOLEX EJECTEUR","unité","Coupe et perçage"],["118889 6X99","HOLEX EJECTEUR","unité","Coupe et perçage"],["119000 14","MOD.CAROTTAGE FEIN HM QUICKIN 14MM","unité","Coupe et perçage"],["150182 6","HOLEX FRAISE A CHANFREINNER 90° 6mm","unité","Coupe et perçage"],["150182 8","HOLEX FRAISE A CHANFREINNER 90° 8mm","unité","Coupe et perçage"],["150182 10","HOLEX FRAISE A CHANFREINNER 90° 10mm","unité","Coupe et perçage"],["150182 25","HOLEX FRAISE A CHANFREINNER 90° 25mm","unité","Coupe et perçage"],["150180 31","Fraise à chanfreiner 90°, TiN, ⌀ ext. Dc: 31mm","unité","Coupe et perçage"]];
+async function loadCat(){
+  const add = {};
+  CAT.forEach((c, k) => { const id = 'm' + String(k + 1).padStart(3, '0'); if(!S.items[id]) add[id] = {ref:c[0], name:c[1], unit:c[2], cat:c[3], qty:0, min:0}; });
+  const n = Object.keys(add).length;
+  if(!n) return toast('Catalogue déjà chargé');
+  if(!confirm(`Ajouter ${n} articles du catalogue (stock à 0) ?`)) return;
+  try{ await api('items', 'PATCH', add); toast('Catalogue chargé'); load(); }catch(e){ toast('Erreur réseau'); }
+}
+function labels(){
+  const w = window.open('', '_blank'); if(!w) return toast('Fenêtre bloquée');
+  const cells = list().map(i => { const q = qrcode(0, 'M'); q.addData(i.id); q.make(); return `<div class="c">${q.createSvgTag(3)}<b>${esc(i.ref || '')}</b><span>${esc(i.name)}</span></div>`; }).join('');
+  w.document.write(`<html><head><meta charset="utf-8"><title>Étiquettes QR</title><style>body{font-family:sans-serif;margin:8mm}.g{display:grid;grid-template-columns:repeat(4,1fr);gap:4mm}.c{border:1px solid #999;padding:3mm;text-align:center;font-size:9px;break-inside:avoid}.c svg{width:26mm;height:26mm}.c b,.c span{display:block}</style></head><body><div class="g">${cells}</div></body></html>`);
+  w.document.close();
+}
+load(); render();
+</script>
+</body>
+</html>
