@@ -65,7 +65,7 @@ td,th{padding:6px;border-bottom:1px solid var(--line);text-align:left}
 const DB = "https://stock-consommables-default-rtdb.europe-west1.firebasedatabase.app"; // URL de la base Firebase (à vérifier)
 const ROOT = "magasin";   // dossier séparé de l'atelier dans la base
 const PIN = "1234";       // code administrateur (à changer)
-const VERSION = "v2.1";
+const VERSION = "v2.2";
 // =========================
 let S = {items:{}, moves:{}, ops:{}}, admin = false, tab = 'stock', q = '', stream = null;
 const $ = id => document.getElementById(id);
@@ -131,11 +131,33 @@ function sortie(id){
   <div class="acts"><button onclick="doMove('${id}','sortie')">Valider la sortie</button><button class="sec" onclick="closeM()">Annuler</button></div>`);
   const qf = $('mq'); qf.focus(); qf.select(); qf.onkeydown = e => { if(e.key === 'Enter') doMove(id, 'sortie'); };
 }
-function entree(id){
+let PEND = null;
+function entree(id, q){
   const i = S.items[id];
-  openM(`<b>Entrée : ${esc(i.name)}</b><label>Quantité reçue</label><input id="mq" type="number" min="1" value="1" inputmode="numeric">
+  openM(`<b>Entrée : ${esc(i.name)}</b><p class="cat">En stock : ${i.qty} ${esc(i.unit || '')}</p><label>Quantité reçue</label><input id="mq" type="number" min="1" value="${q || 1}" inputmode="numeric">
   <label>Initiales</label><input id="mi" maxlength="4" value="${esc(ini())}" style="text-transform:uppercase">
-  <div class="acts"><button onclick="doMove('${id}','entree')">Valider l'entrée</button><button class="sec" onclick="closeM()">Annuler</button></div>`);
+  <div class="acts"><button onclick="confirmEntree('${id}')">Suivant</button><button class="sec" onclick="closeM()">Annuler</button></div>`);
+  const qf = $('mq'); qf.focus(); qf.select(); qf.onkeydown = e => { if(e.key === 'Enter') confirmEntree(id); };
+}
+function confirmEntree(id){
+  const i = S.items[id], n = parseInt($('mq').value), who = $('mi').value.trim().toUpperCase();
+  if(!n || n < 1) return toast('Quantité invalide');
+  if(!who) return toast('Initiales obligatoires');
+  PEND = {id, n, who};
+  openM(`<b>Confirmer l’entrée</b><p style="margin:12px 0"><b>${esc(i.name)}</b><br><span class="cat">${esc(i.ref || '')}</span></p>
+  <table><tr><td>Stock actuel</td><td>${i.qty}</td></tr><tr><td>Entrée</td><td><b>+ ${n}</b> ${esc(i.unit || '')}</td></tr><tr><td>Nouveau stock</td><td><b>${i.qty + n}</b></td></tr></table>
+  <div class="acts"><button onclick="doEntree()">Confirmer l’entrée</button><button class="sec" onclick="entree(PEND.id, PEND.n)">Corriger</button></div>`);
+}
+async function doEntree(){
+  if(!PEND) return;
+  const {id, n, who} = PEND;
+  try{
+    const cur = await api(`items/${id}`); if(!cur) return toast('Article supprimé');
+    const left = cur.qty + n, nm = cur.name;
+    await api(`items/${id}/qty`, 'PUT', left);
+    await api('moves', 'POST', {item:id, ref:cur.ref || '', name:nm, qty:n, who, op:'', type:'entree', ts:Date.now()});
+    PEND = null; localStorage.setItem('ini', who); closeM(); toast(`Entrée : ${nm}, stock ${left}`); load();
+  }catch(e){ toast('Erreur réseau'); }
 }
 async function doMove(id, type){
   const o = type === 'sortie' ? opActive() : null;
@@ -285,7 +307,7 @@ function scanItem(){
 
 function cards(){
   const O = Object.values(S.ops);
-  openM(`<b>Cartes enregistrées</b><table>${O.map((o, n) => `<tr><td>${esc(o.name)}</td><td>${esc(o.ini)}</td><td><button class="sm red" onclick="delCard(${n})">Retirer</button></td></tr>`).join('') || '<tr><td>Aucune carte</td></tr>'}</table>
+  openM(`<b>Cartes enregistrées</b><table>${O.map((o, n) => `<tr><td>${esc(o.name)}</td><td>${esc(o.ini)}</td><td><button class="sm sec" onclick="editCard(${n})">Modifier</button> <button class="sm red" onclick="delCard(${n})">Retirer</button></td></tr>`).join('') || '<tr><td>Aucune carte</td></tr>'}</table>
   <div class="acts"><button onclick="addCard()">Ajouter une carte</button><button class="sec" onclick="closeM()">Fermer</button></div>`);
 }
 function addCard(){
@@ -295,11 +317,36 @@ function addCard(){
 function cancelScan(){ stopCam(); SCAN_CB = null; }
 function cardCode(code){
   code = String(code || '').trim(); if(!code) return false;
-  const k = key(code); stopCam();
+  const k = key(code); stopCam(); SCAN_CB = null;
   if(S.ops[k]){ toast('Carte déjà enregistrée'); cards(); return true; }
   pendingKey = k;
   openM(`<b>Nouvelle carte</b><label>Nom et prénom</label><input id="on"><label>Initiales</label><input id="oi" maxlength="4" style="text-transform:uppercase">
   <div class="acts"><button onclick="saveCard()">Enregistrer</button><button class="sec" onclick="cards()">Annuler</button></div>`);
+  return true;
+}
+let editOld = '', editData = null;
+function editCard(n){
+  const k = Object.keys(S.ops)[n], o = S.ops[k]; if(!o) return;
+  pendingKey = k;
+  openM(`<b>Modifier la carte</b><label>Nom et prénom</label><input id="on" value="${esc(o.name)}"><label>Initiales</label><input id="oi" maxlength="4" value="${esc(o.ini)}" style="text-transform:uppercase">
+  <p class="cat" style="margin-top:12px">Carte perdue ou remplacée ? Scannez la nouvelle carte : elle prend la place de l’ancienne pour cette personne.</p>
+  <div class="acts"><button onclick="saveCard()">Enregistrer</button><button class="sec" onclick="changeCard()">Changer la carte</button><button class="sec" onclick="cards()">Annuler</button></div>`);
+}
+function changeCard(){
+  const name = $('on').value.trim(), ini = $('oi').value.trim().toUpperCase();
+  if(!name || !ini) return toast('Nom et initiales requis');
+  editOld = pendingKey; editData = {name, ini};
+  scanPrompt('Scannez la nouvelle carte', 'Code-barres à plat, bien éclairé. Sinon, saisissez le numéro :', swapCard, 'cancelScan(); cards()',
+    `<div class="row" style="margin-top:8px"><input id="mn" placeholder="Numéro de la carte"><button onclick="swapCard($('mn').value)">OK</button></div>`);
+}
+function swapCard(code){
+  code = String(code || '').trim(); if(!code) return false;
+  const k = key(code);
+  if(k !== editOld && S.ops[k]){ bad('Cette carte est déjà enregistrée'); return false; }
+  stopCam(); SCAN_CB = null;
+  (async () => {
+    try{ await api('ops/' + k, 'PUT', editData); if(k !== editOld) await api('ops/' + editOld, 'DELETE'); await load(); toast('Carte mise à jour'); cards(); }catch(e){ toast('Erreur réseau'); }
+  })();
   return true;
 }
 async function saveCard(){
