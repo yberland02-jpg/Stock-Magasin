@@ -56,6 +56,7 @@ td,th{padding:6px;border-bottom:1px solid var(--line);text-align:left}
 <nav>
   <button data-t="stock" onclick="go('stock')">Stock</button>
   <button data-t="sortie" onclick="go('sortie')">Sortie</button>
+  <button data-t="entree" id="navE" onclick="go('entree')" style="display:none">Entrée</button>
   <button data-t="histo" onclick="go('histo')">Historique</button>
 </nav>
 <div id="modal" onclick="if(event.target==this)closeM()"><div class="in" id="mc"></div></div>
@@ -65,7 +66,7 @@ td,th{padding:6px;border-bottom:1px solid var(--line);text-align:left}
 const DB = "https://stock-consommables-default-rtdb.europe-west1.firebasedatabase.app"; // URL de la base Firebase (à vérifier)
 const ROOT = "magasin";   // dossier séparé de l'atelier dans la base
 const PIN = "1234";       // code administrateur (à changer)
-const VERSION = "v2.2";
+const VERSION = "v2.3";
 // =========================
 let S = {items:{}, moves:{}, ops:{}}, admin = false, tab = 'stock', q = '', stream = null;
 const $ = id => document.getElementById(id);
@@ -83,9 +84,11 @@ setInterval(() => { if($('modal').style.display !== 'flex') load(); }, 6000);
 
 function go(t){ tab = t; stopCam(); render(); }
 function render(){
+  if(!admin && tab === 'entree') tab = 'stock';
+  $('navE').style.display = admin ? '' : 'none';
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.t === tab));
   $('lock').textContent = admin ? 'Quitter admin' : 'Administrateur';
-  $('app').innerHTML = tab === 'stock' ? vStock() : tab === 'sortie' ? vSortie() : vHisto();
+  $('app').innerHTML = tab === 'stock' ? vStock() : tab === 'sortie' || tab === 'entree' ? vScan() : vHisto();
 }
 const list = () => Object.entries(S.items).map(([id, v]) => ({id, ...v})).sort((a, b) => (a.cat || '').localeCompare(b.cat || '') || a.name.localeCompare(b.name));
 const monthKey = ts => { const d = new Date(ts); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'); };
@@ -101,15 +104,17 @@ function vStock(){
   <div class="bar"><input placeholder="Rechercher" value="${esc(q)}" oninput="q=this.value;render();this.focus()"><select style="width:45%" onchange="window.fc=this.value;render()"><option value="">Toutes</option>${cats.map(c => `<option ${window.fc === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>
   ${admin ? `<div class="bar"><button class="sm" onclick="editItem()">Nouvel article</button><button class="sm sec" onclick="order()">Commander</button><button class="sm sec" onclick="exportX()">Export Excel</button><button class="sm sec" onclick="importX()">Importer</button><button class="sm sec" onclick="loadCat()">Catalogue</button><button class="sm sec" onclick="cards()">Cartes</button></div>` : ''}
   ${f.map(i => `<div class="item"><div class="row"><div><div class="name">${esc(i.name)}</div><div class="cat">${esc(i.ref || '')}${i.cat ? ' · ' + esc(i.cat) : ''}${i.min ? ' · seuil ' + i.min : ''}</div></div><div class="qty ${(i.min > 0 && i.qty <= i.min) ? 'low' : ''}">${i.qty} ${esc(i.unit || '')}</div></div>
-  <div class="acts"><button class="sm" onclick="needOp(() => sortie('${i.id}'))">Sortie</button>${admin ? `<button class="sm sec" onclick="entree('${i.id}')">Entrée</button><button class="sm sec" onclick="qr('${i.id}')">QR</button><button class="sm sec" onclick="editItem('${i.id}')">Modifier</button><button class="sm red" onclick="del('${i.id}')">Supprimer</button>` : ''}</div></div>`).join('') || '<div class="box">Aucun article.</div>'}`;
+  <div class="acts"><button class="sm" onclick="needOp(() => sortie('${i.id}'))">Sortie</button>${admin ? `<button class="sm sec" onclick="needOp(() => entree('${i.id}'))">Entrée</button><button class="sm sec" onclick="qr('${i.id}')">QR</button><button class="sm sec" onclick="editItem('${i.id}')">Modifier</button><button class="sm red" onclick="del('${i.id}')">Supprimer</button>` : ''}</div></div>`).join('') || '<div class="box">Aucun article.</div>'}`;
 }
 
-function vSortie(){
-  const o = opActive();
-  return `<div class="box"><b>Sortie de matière</b>${o
-    ? `<p>Opérateur : <b>${esc(o.name)}</b> (${esc(o.ini)}) <button class="sm sec" onclick="SESSION = null; render()">Changer</button></p><p class="cat">${DOUCH ? 'Scannez l’article avec la douchette : chaque scan retire 1 unité.' : 'Scannez l’étiquette de l’article : chaque scan retire 1 unité.'}</p>${DOUCH ? '' : '<div class="acts"><button onclick="scanItem()">Scanner un article</button></div>'}`
-    : `<p class="cat">${DOUCH ? 'Scannez votre carte avec la douchette, puis l’article.' : '1. Scannez votre carte. 2. Scannez l’article. 3. Indiquez la quantité.'}</p>${DOUCH ? '' : '<div class="acts"><button onclick="needOp(scanItem)">Scanner ma carte</button></div>'}`}
-  ${LAST ? `<p style="margin-top:12px"><b>Dernière sortie :</b> ${esc(LAST)}</p>` : ''}<div class="acts" style="margin-top:12px"><button class="sm sec" onclick="setDouch(${DOUCH ? 0 : 1})">Lecteur : ${DOUCH ? 'douchette' : 'caméra'} (changer)</button></div></div>`;
+function vScan(){
+  const E = tab === 'entree', o = opActive();
+  const aim = E ? 'Scannez l’article, puis indiquez la quantité reçue.' : (DOUCH ? 'Scannez l’article avec la douchette : chaque scan retire 1 unité.' : 'Scannez l’étiquette de l’article : chaque scan retire 1 unité.');
+  const start = E ? 'Scannez votre carte, puis l’article, puis indiquez la quantité reçue.' : (DOUCH ? 'Scannez votre carte avec la douchette, puis l’article.' : '1. Scannez votre carte. 2. Scannez l’article. 3. Indiquez la quantité.');
+  return `<div class="box"><b>${E ? 'Entrée' : 'Sortie'} de matière</b>${o
+    ? `<p>Opérateur : <b>${esc(o.name)}</b> (${esc(o.ini)}) <button class="sm sec" onclick="SESSION = null; render()">Changer</button></p><p class="cat">${aim}</p>${DOUCH ? '' : '<div class="acts"><button onclick="scanItem()">Scanner un article</button></div>'}`
+    : `<p class="cat">${start}</p>${DOUCH ? '' : '<div class="acts"><button onclick="needOp(scanItem)">Scanner ma carte</button></div>'}`}
+  ${LAST && !E ? `<p style="margin-top:12px"><b>Dernière sortie :</b> ${esc(LAST)}</p>` : ''}<div class="acts" style="margin-top:12px"><button class="sm sec" onclick="setDouch(${DOUCH ? 0 : 1})">Lecteur : ${DOUCH ? 'douchette' : 'caméra'} (changer)</button></div></div>`;
 }
 
 function vHisto(){
@@ -131,32 +136,25 @@ function sortie(id){
   <div class="acts"><button onclick="doMove('${id}','sortie')">Valider la sortie</button><button class="sec" onclick="closeM()">Annuler</button></div>`);
   const qf = $('mq'); qf.focus(); qf.select(); qf.onkeydown = e => { if(e.key === 'Enter') doMove(id, 'sortie'); };
 }
-let PEND = null;
 function entree(id, q){
-  const i = S.items[id];
-  openM(`<b>Entrée : ${esc(i.name)}</b><p class="cat">En stock : ${i.qty} ${esc(i.unit || '')}</p><label>Quantité reçue</label><input id="mq" type="number" min="1" value="${q || 1}" inputmode="numeric">
-  <label>Initiales</label><input id="mi" maxlength="4" value="${esc(ini())}" style="text-transform:uppercase">
-  <div class="acts"><button onclick="confirmEntree('${id}')">Suivant</button><button class="sec" onclick="closeM()">Annuler</button></div>`);
-  const qf = $('mq'); qf.focus(); qf.select(); qf.onkeydown = e => { if(e.key === 'Enter') confirmEntree(id); };
+  const i = S.items[id]; if(!i) return toast('Article inconnu');
+  const o = opActive(); if(!o) return needOp(() => entree(id, q));
+  openM(`<b>Entrée : ${esc(i.name)}</b><p class="cat">${esc(i.ref || '')}<br>En stock : ${i.qty} ${esc(i.unit || '')}<br>Opérateur : <b>${esc(o.name)}</b> (${esc(o.ini)})</p>
+  <label>Quantité reçue</label><input id="mq" type="number" min="1" value="${q || 1}" inputmode="numeric" oninput="$('np').textContent = ${i.qty} + (parseInt(this.value) || 0)">
+  <p style="margin:10px 0">Nouveau stock : <b id="np">${i.qty + (q || 1)}</b></p>
+  <div class="acts"><button onclick="doEntree('${id}')">Valider l’entrée</button><button class="sec" onclick="closeM()">Annuler</button></div>`);
+  const qf = $('mq'); qf.focus(); qf.select(); qf.onkeydown = e => { if(e.key === 'Enter') doEntree(id); };
 }
-function confirmEntree(id){
-  const i = S.items[id], n = parseInt($('mq').value), who = $('mi').value.trim().toUpperCase();
+async function doEntree(id){
+  const o = opActive(); if(!o){ closeM(); return toast('Session expirée : scannez votre carte'); }
+  const n = parseInt($('mq').value);
   if(!n || n < 1) return toast('Quantité invalide');
-  if(!who) return toast('Initiales obligatoires');
-  PEND = {id, n, who};
-  openM(`<b>Confirmer l’entrée</b><p style="margin:12px 0"><b>${esc(i.name)}</b><br><span class="cat">${esc(i.ref || '')}</span></p>
-  <table><tr><td>Stock actuel</td><td>${i.qty}</td></tr><tr><td>Entrée</td><td><b>+ ${n}</b> ${esc(i.unit || '')}</td></tr><tr><td>Nouveau stock</td><td><b>${i.qty + n}</b></td></tr></table>
-  <div class="acts"><button onclick="doEntree()">Confirmer l’entrée</button><button class="sec" onclick="entree(PEND.id, PEND.n)">Corriger</button></div>`);
-}
-async function doEntree(){
-  if(!PEND) return;
-  const {id, n, who} = PEND;
   try{
     const cur = await api(`items/${id}`); if(!cur) return toast('Article supprimé');
     const left = cur.qty + n, nm = cur.name;
     await api(`items/${id}/qty`, 'PUT', left);
-    await api('moves', 'POST', {item:id, ref:cur.ref || '', name:nm, qty:n, who, op:'', type:'entree', ts:Date.now()});
-    PEND = null; localStorage.setItem('ini', who); closeM(); toast(`Entrée : ${nm}, stock ${left}`); load();
+    await api('moves', 'POST', {item:id, ref:cur.ref || '', name:nm, qty:n, who:o.ini, op:o.name, type:'entree', ts:Date.now()});
+    o.t = Date.now(); closeM(); toast(`Entrée : ${nm}, stock ${left}`); load();
   }catch(e){ toast('Erreur réseau'); }
 }
 async function doMove(id, type){
@@ -300,7 +298,7 @@ function scanItem(){
   scanPrompt('Scannez l’article', '', code => {
     const id = findItem(code);
     if(!id) return bad('Article inconnu');
-    stopCam(); closeM(); outNow(id);
+    stopCam(); closeM(); tab === 'entree' ? entree(id) : outNow(id);
     return true;
   });
 }
@@ -376,8 +374,8 @@ function flushScan(){
   if(SCAN_CB) return void SCAN_CB(code);
   if($('modal').style.display === 'flex') return;
   const id = findItem(code), o = S.ops[key(code)];
-  if(id) return outNow(id);
-  if(o){ SESSION = {name:o.name, ini:o.ini, t:Date.now()}; toast('Bonjour ' + o.name); return go('sortie'); }
+  if(id) return tab === 'entree' ? needOp(() => entree(id)) : outNow(id);
+  if(o){ SESSION = {name:o.name, ini:o.ini, t:Date.now()}; toast('Bonjour ' + o.name); return go(tab === 'entree' ? 'entree' : 'sortie'); }
   bad('Code inconnu');
 }
 
